@@ -1,0 +1,30 @@
+[Unit]
+Description=Gifteeng Web (Next.js)
+After=network-online.target gifteeng-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gifteeng
+Group=gifteeng
+WorkingDirectory=/srv/gifteeng/apps/web
+EnvironmentFile=/srv/gifteeng/.env
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOSTNAME=0.0.0.0
+ExecStart=/usr/bin/npx next start -p 3000
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gifteeng-web
+LimitNOFILE=65535
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

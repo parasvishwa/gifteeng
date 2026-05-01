@@ -1,0 +1,71 @@
+{
+  "@@locale": "hi",
+
+  "appName": "Gifteeng",
+
+  "navHome": "होम",
+  "navShop": "शॉप",
+  "navPlay": "खेलें",
+  "navGiftCasino": "गिफ्ट कैसीनो",
+  "navCart": "कार्ट",
+  "navAccount": "खाता",
+
+  "homeSearchHint": "गिफ्ट, अवसर या श्रेणी खोजें…",
+  "homeSearchCta": "खोजें",
+  "homeOccasionTitle": "अवसर से खरीदारी",
+  "homeOccasionSubtitle": "कौन सा मौका है?",
+  "homeCategoryTitle": "श्रेणी से खरीदारी",
+  "homeSeeAll": "सभी देखें",
+  "homeTestimonialsTitle": "ग्राहक क्या कहते हैं",
+
+  "cartEmpty": "आपका कार्ट ख़ाली है",
+  "cartContinue": "खरीदारी जारी रखें",
+  "cartCheckout": "चेकआउट पर जाएँ",
+
+  "orderSuccessTitle": "ऑर्डर सफल! 🎉",
+  "orderSuccessSubtitle": "आपके गिफ्ट रास्ते में हैं 🎁",
+  "orderContinueShopping": "और खरीदारी करें",
+  "orderViewMyOrders": "मेरे ऑर्डर देखें",
+
+  "reviewWriteTitle": "समीक्षा लिखें",
+  "reviewSubmit": "समीक्षा सबमिट करें",
+  "reviewThanks": "✨ आपकी समीक्षा के लिए धन्यवाद!",
+
+  "remindersTitle": "गिफ्ट रिमाइंडर",
+  "remindersEmptyTitle": "अभी कोई रिमाइंडर नहीं",
+  "remindersEmptySubtitle": "जन्मदिन, सालगिरह और त्योहारों से पहले हम आपको याद दिलाएँगे — ताकि गिफ्ट समय पर पहुँचे।",
+  "remindersAddFirst": "पहला रिमाइंडर जोड़ें",
+  "remindersAddButton": "रिमाइंडर जोड़ें",
+  "remindersNewTitle": "नया रिमाइंडर",
+  "remindersEditTitle": "रिमाइंडर संपादित करें",
+  "remindersFieldOccasion": "अवसर",
+  "remindersFieldRecipient": "प्राप्तकर्ता (वैकल्पिक)",
+  "remindersFieldDate": "कार्यक्रम की तारीख",
+  "remindersRepeatsYearly": "हर साल दोहराएँ",
+  "remindersNotifyBefore": "कार्यक्रम से पहले सूचना",
+  "remindersDaysUntilToday": "आज",
+  "remindersDaysUntilTomorrow": "कल",
+  "remindersDaysUntilN": "{n, plural, =1{1 दिन} other{{n} दिन}}",
+  "@remindersDaysUntilN": {
+    "placeholders": { "n": { "type": "int" } }
+  },
+
+  "referralTitle": "दोस्तों को बुलाएँ",
+  "referralHeading": "₹200 दें, ₹200 पाएँ",
+  "referralCopyCode": "कॉपी करने के लिए टैप करें",
+  "referralShareWhatsApp": "WhatsApp",
+  "referralShareMore": "अधिक",
+
+  "authSignInRequired": "जारी रखने के लिए साइन इन करें",
+  "commonCancel": "रद्द करें",
+  "commonSave": "सहेजें",
+  "commonDelete": "हटाएँ",
+  "commonRetry": "पुनः प्रयास",
+  "commonBack": "वापस",
+
+  "langEnglish": "English",
+  "langHindi": "हिन्दी",
+  "langMarathi": "मराठी",
+  "settingsLanguageTitle": "भाषा",
+  "settingsLanguageSubtitle": "अपनी पसंद की भाषा चुनें"
+}

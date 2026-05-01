@@ -1,0 +1,71 @@
+{
+  "@@locale": "mr",
+
+  "appName": "Gifteeng",
+
+  "navHome": "मुख्यपृष्ठ",
+  "navShop": "शॉप",
+  "navPlay": "खेळा",
+  "navGiftCasino": "गिफ्ट कॅसिनो",
+  "navCart": "कार्ट",
+  "navAccount": "खाते",
+
+  "homeSearchHint": "भेटवस्तू, प्रसंग किंवा प्रकार शोधा…",
+  "homeSearchCta": "शोधा",
+  "homeOccasionTitle": "प्रसंगानुसार खरेदी",
+  "homeOccasionSubtitle": "कोणता क्षण आहे?",
+  "homeCategoryTitle": "प्रकारानुसार खरेदी",
+  "homeSeeAll": "सर्व पाहा",
+  "homeTestimonialsTitle": "ग्राहक काय म्हणतात",
+
+  "cartEmpty": "तुमचे कार्ट रिकामे आहे",
+  "cartContinue": "खरेदी सुरू ठेवा",
+  "cartCheckout": "चेकआउट करा",
+
+  "orderSuccessTitle": "ऑर्डर यशस्वी! 🎉",
+  "orderSuccessSubtitle": "तुमच्या भेटवस्तू मार्गावर आहेत 🎁",
+  "orderContinueShopping": "अजून खरेदी करा",
+  "orderViewMyOrders": "माझ्या ऑर्डर पाहा",
+
+  "reviewWriteTitle": "पुनरावलोकन लिहा",
+  "reviewSubmit": "पुनरावलोकन सादर करा",
+  "reviewThanks": "✨ तुमच्या पुनरावलोकनाबद्दल धन्यवाद!",
+
+  "remindersTitle": "भेटवस्तू रिमाइंडर",
+  "remindersEmptyTitle": "अद्याप रिमाइंडर नाहीत",
+  "remindersEmptySubtitle": "वाढदिवस, वर्धापनदिन आणि सणांपूर्वी आम्ही तुम्हाला आठवण करून देऊ — त्यामुळे भेटवस्तू वेळेवर पोहोचेल.",
+  "remindersAddFirst": "पहिला रिमाइंडर जोडा",
+  "remindersAddButton": "रिमाइंडर जोडा",
+  "remindersNewTitle": "नवीन रिमाइंडर",
+  "remindersEditTitle": "रिमाइंडर संपादित करा",
+  "remindersFieldOccasion": "प्रसंग",
+  "remindersFieldRecipient": "प्राप्तकर्ता (ऐच्छिक)",
+  "remindersFieldDate": "कार्यक्रमाची तारीख",
+  "remindersRepeatsYearly": "दरवर्षी पुनरावृत्ती",
+  "remindersNotifyBefore": "कार्यक्रमापूर्वी सूचना",
+  "remindersDaysUntilToday": "आज",
+  "remindersDaysUntilTomorrow": "उद्या",
+  "remindersDaysUntilN": "{n, plural, =1{1 दिवस} other{{n} दिवस}}",
+  "@remindersDaysUntilN": {
+    "placeholders": { "n": { "type": "int" } }
+  },
+
+  "referralTitle": "मित्रांना आमंत्रण द्या",
+  "referralHeading": "₹200 द्या, ₹200 मिळवा",
+  "referralCopyCode": "कॉपी करण्यासाठी टॅप करा",
+  "referralShareWhatsApp": "WhatsApp",
+  "referralShareMore": "अधिक",
+
+  "authSignInRequired": "पुढे चालू ठेवण्यासाठी साइन इन करा",
+  "commonCancel": "रद्द करा",
+  "commonSave": "जतन करा",
+  "commonDelete": "हटवा",
+  "commonRetry": "पुन्हा प्रयत्न करा",
+  "commonBack": "मागे",
+
+  "langEnglish": "English",
+  "langHindi": "हिन्दी",
+  "langMarathi": "मराठी",
+  "settingsLanguageTitle": "भाषा",
+  "settingsLanguageSubtitle": "तुमच्या आवडीची भाषा निवडा"
+}

@@ -1,0 +1,72 @@
+{
+  "@@locale": "en",
+
+  "appName": "Gifteeng",
+  "@appName": { "description": "App name (untranslated brand)" },
+
+  "navHome": "Home",
+  "navShop": "Shop",
+  "navPlay": "Play",
+  "navGiftCasino": "Gift Casino",
+  "navCart": "Cart",
+  "navAccount": "Account",
+
+  "homeSearchHint": "Search gifts, occasions, categories…",
+  "homeSearchCta": "Search",
+  "homeOccasionTitle": "Shop by Occasion",
+  "homeOccasionSubtitle": "What's the moment?",
+  "homeCategoryTitle": "Shop by Category",
+  "homeSeeAll": "See all",
+  "homeTestimonialsTitle": "What Customers Say",
+
+  "cartEmpty": "Your cart is empty",
+  "cartContinue": "Continue Shopping",
+  "cartCheckout": "Proceed to Checkout",
+
+  "orderSuccessTitle": "Order Placed! 🎉",
+  "orderSuccessSubtitle": "Your gifts are on their way 🎁",
+  "orderContinueShopping": "Continue Shopping",
+  "orderViewMyOrders": "View My Orders",
+
+  "reviewWriteTitle": "Write a review",
+  "reviewSubmit": "Submit review",
+  "reviewThanks": "✨ Thanks for your review!",
+
+  "remindersTitle": "Gift Reminders",
+  "remindersEmptyTitle": "No reminders yet",
+  "remindersEmptySubtitle": "We'll nudge you before birthdays, anniversaries, and festivals so your gift always arrives on time.",
+  "remindersAddFirst": "Add your first reminder",
+  "remindersAddButton": "Add reminder",
+  "remindersNewTitle": "New reminder",
+  "remindersEditTitle": "Edit reminder",
+  "remindersFieldOccasion": "Occasion",
+  "remindersFieldRecipient": "Recipient (optional)",
+  "remindersFieldDate": "Event date",
+  "remindersRepeatsYearly": "Repeats yearly",
+  "remindersNotifyBefore": "Notify before event",
+  "remindersDaysUntilToday": "Today",
+  "remindersDaysUntilTomorrow": "Tomorrow",
+  "remindersDaysUntilN": "{n, plural, =1{1 day} other{{n} days}}",
+  "@remindersDaysUntilN": {
+    "placeholders": { "n": { "type": "int" } }
+  },
+
+  "referralTitle": "Refer & Earn",
+  "referralHeading": "Give ₹200, Get ₹200",
+  "referralCopyCode": "Tap to copy",
+  "referralShareWhatsApp": "WhatsApp",
+  "referralShareMore": "More",
+
+  "authSignInRequired": "Please sign in to continue",
+  "commonCancel": "Cancel",
+  "commonSave": "Save",
+  "commonDelete": "Delete",
+  "commonRetry": "Retry",
+  "commonBack": "Back",
+
+  "langEnglish": "English",
+  "langHindi": "हिन्दी",
+  "langMarathi": "मराठी",
+  "settingsLanguageTitle": "Language",
+  "settingsLanguageSubtitle": "Choose how the app speaks to you"
+}

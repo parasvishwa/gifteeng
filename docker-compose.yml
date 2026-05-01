@@ -1,0 +1,82 @@
+version: "3.9"
+
+# NOTE: In production, Postgres 16 runs directly on the Contabo VPS
+# (same box as the API + Web), bound to 127.0.0.1:5432 via systemd —
+# see deploy/bootstrap-contabo.sh for the install path.
+#
+# The `postgres` service below is gated behind the `local-db` profile
+# and is intended only for local development or emergency failover
+# (e.g. spinning up a throwaway DB on a dev laptop).
+# Start it with:  docker compose --profile local-db up -d
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: gifteeng/api:latest
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./uploads:/var/gifteeng/uploads
+    expose:
+      - "4000"
+    # depends_on is commented because Postgres is external (KVM VPS).
+    # Uncomment when running with the `local-db` profile.
+    # depends_on:
+    #   - postgres
+    networks:
+      - gifteeng
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    image: gifteeng/web:latest
+    env_file:
+      - .env
+    restart: unless-stopped
+    depends_on:
+      - api
+    expose:
+      - "3000"
+    networks:
+      - gifteeng
+
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./deploy/nginx/certs:/etc/nginx/certs:ro
+    depends_on:
+      - web
+      - api
+    networks:
+      - gifteeng
+
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["local-db"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: gifteeng
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: gifteeng
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    networks:
+      - gifteeng
+
+networks:
+  gifteeng:
+    driver: bridge
+
+volumes:
+  pgdata:

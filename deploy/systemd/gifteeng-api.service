@@ -1,0 +1,29 @@
+[Unit]
+Description=Gifteeng API (NestJS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gifteeng
+Group=gifteeng
+WorkingDirectory=/srv/gifteeng
+EnvironmentFile=/srv/gifteeng/.env
+Environment=NODE_ENV=production
+Environment=PORT=4000
+ExecStart=/usr/bin/node /srv/gifteeng/apps/api/dist/main.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gifteeng-api
+LimitNOFILE=65535
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

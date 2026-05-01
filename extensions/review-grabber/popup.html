@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Gifteeng Review Grabber</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header>
+    <div class="logo">
+      <span class="dot"></span>
+      <span class="brand">Gifteeng</span>
+      <span class="sub">Review Grabber</span>
+      <span class="sub" id="versionStamp" style="margin-left:auto;color:#9ca3af;">v1.2</span>
+    </div>
+    <button id="settingsBtn" class="icon-btn" title="Settings">⚙</button>
+  </header>
+
+  <!-- ── Auth screen (first run) ────────────────────────────────────── -->
+  <section id="authScreen" class="screen">
+    <h2>Sign in</h2>
+    <p class="muted">The extension needs your admin token to import reviews.</p>
+
+    <button id="autoDetectBtn" class="primary" style="margin-top:12px;">
+      🔍 Find token from open admin tab
+    </button>
+    <p class="muted small" style="text-align:center;margin-top:6px;">
+      Opens admin tab? One click and we'll grab your token automatically.
+    </p>
+
+    <div style="display:flex;align-items:center;gap:8px;margin:16px 0 8px;">
+      <div style="flex:1;height:1px;background:#e5e7eb;"></div>
+      <span class="muted small">or paste manually</span>
+      <div style="flex:1;height:1px;background:#e5e7eb;"></div>
+    </div>
+
+    <input id="tokenInput" type="password" placeholder="Bearer token (eyJhbGc…)" />
+    <input id="apiBaseInput" type="text" placeholder="API base (default: https://new-api.gifteeng.com)" />
+    <button id="saveAuthBtn" class="primary">Save &amp; continue</button>
+    <p id="authError" class="error hidden"></p>
+    <details style="margin-top:10px;">
+      <summary style="font-size:11px;color:#6b7280;cursor:pointer;">How to find token manually</summary>
+      <p class="muted small" style="margin-top:6px;">
+        On your admin panel: F12 → Application tab → Local Storage → click your admin domain → find <code>gifteeng.b2b.token</code> → copy value.
+      </p>
+    </details>
+  </section>
+
+  <!-- ── Main screen — fetch from current tab ──────────────────────── -->
+  <section id="mainScreen" class="screen hidden">
+    <div class="source-card" id="sourceCard">
+      <div class="source-icon" id="sourceIcon">?</div>
+      <div class="source-meta">
+        <p class="source-label" id="sourceLabel">Detecting source…</p>
+        <p class="source-url muted" id="sourceUrl">—</p>
+      </div>
+    </div>
+
+    <div class="filter-row">
+      <label class="filter-label">
+        <input id="minRatingFilter" type="number" min="1" max="5" step="0.5" value="3.5" />
+        <span>★+ minimum rating</span>
+      </label>
+      <button id="fetchBtn" class="primary">⬇ Fetch reviews</button>
+    </div>
+
+    <p id="fetchStatus" class="muted small hidden"></p>
+
+    <!-- Product tag selector — appears after fetch -->
+    <div id="productTag" class="hidden">
+      <label class="block-label">Tag to product (optional):</label>
+      <input id="productSearch" type="text" placeholder="Search Gifteeng product…" />
+      <div id="productResults" class="dropdown hidden"></div>
+      <div id="selectedProduct" class="selected-product hidden">
+        <span id="selectedProductTitle"></span>
+        <button id="clearProduct" class="x-btn">×</button>
+      </div>
+    </div>
+
+    <!-- Review list with checkboxes -->
+    <ul id="reviewList" class="review-list"></ul>
+
+    <!-- Footer with bulk actions + import -->
+    <div id="actionBar" class="action-bar hidden">
+      <div class="bulk-actions">
+        <button id="selectAllBtn" class="text-btn">Select all</button>
+        <button id="selectNoneBtn" class="text-btn">Select none</button>
+      </div>
+      <div class="counts">
+        <span id="selectedCount">0</span> selected
+      </div>
+      <button id="importBtn" class="primary" disabled>↑ Import to Gifteeng</button>
+    </div>
+
+    <p id="importStatus" class="status hidden"></p>
+  </section>
+
+  <script src="popup.js"></script>
+</body>
+</html>

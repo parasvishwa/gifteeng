@@ -1,0 +1,29 @@
+{
+  "name": "@gifteeng/db",
+  "version": "0.0.1",
+  "private": true,
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "prisma": "prisma",
+    "seed": "tsx prisma/seed.ts",
+    "migrate:data": "tsx scripts/migrate.ts",
+    "strip:cart-base64": "tsx scripts/strip-cart-base64.ts"
+  },
+  "prisma": {
+    "schema": "prisma/schema.prisma",
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0"
+  },
+  "devDependencies": {
+    "prisma": "^5.22.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "pg": "^8.13.1",
+    "@types/pg": "^8.11.10"
+  }
+}

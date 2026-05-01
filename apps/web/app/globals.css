@@ -1,0 +1,278 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* ── Light mode (default) ── */
+  :root {
+    --background: 0 0% 100%;             /* pure white */
+    --foreground: 230 20% 12%;           /* deep navy text */
+
+    --card: 347 100% 97%;                /* #FFF1F4 — brand-tinted surface */
+    --card-foreground: 230 20% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 230 20% 12%;
+
+    /* Brand red — sole primary CTA color */
+    --primary: 351 85% 58%;              /* #EF3752 */
+    --primary-foreground: 0 0% 100%;     /* white */
+
+    /* Gold — reserved for Goins/coin balance display ONLY */
+    --secondary: 43 96% 52%;             /* #F59E0B */
+    --secondary-foreground: 0 0% 100%;
+
+    --muted: 347 70% 94%;                /* soft pink wash */
+    --muted-foreground: 230 10% 42%;     /* medium gray */
+
+    --accent: 351 85% 95%;               /* faint brand tint */
+    --accent-foreground: 351 85% 40%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 152 60% 38%;
+
+    --border: 347 40% 90%;               /* pink-tinted divider */
+    --input: 347 70% 94%;
+    --ring: 351 85% 58%;                 /* focus ring = brand */
+
+    /* Strict 4pt grid radii */
+    --radius: 0.5rem;
+    --radius-button: 0.75rem;
+    --radius-chip: 0.5rem;
+    --radius-sheet: 1.25rem;
+
+    /* Neutral shadows — light mode */
+    --shadow-card: 0 1px 3px 0 hsl(230 20% 0% / 0.08), 0 1px 6px -1px hsl(230 20% 0% / 0.06);
+    --shadow-card-hover: 0 4px 16px -4px hsl(230 20% 0% / 0.14), 0 2px 8px -2px hsl(230 20% 0% / 0.10);
+    --shadow-elevated: 0 8px 24px -6px hsl(230 20% 0% / 0.18), 0 4px 12px -2px hsl(230 20% 0% / 0.12);
+
+    /* Font — Inter only */
+    --font-body: 'Inter', system-ui, sans-serif;
+  }
+
+  /* ── Dark mode ── */
+  .dark-premium,
+  .dark {
+    --background: 230 23% 4%;            /* #0B0B0F */
+    --foreground: 0 0% 97%;
+
+    --card: 230 20% 9%;                  /* #12131A */
+    --card-foreground: 0 0% 97%;
+
+    --popover: 230 20% 9%;
+    --popover-foreground: 0 0% 97%;
+
+    --primary: 351 85% 58%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 43 96% 52%;
+    --secondary-foreground: 0 0% 100%;
+
+    --muted: 230 15% 14%;                /* #1A1B24 */
+    --muted-foreground: 230 10% 55%;
+
+    --accent: 349 55% 16%;
+    --accent-foreground: 349 85% 80%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 152 60% 40%;
+
+    --border: 230 15% 14%;               /* #1E2030 */
+    --input: 230 15% 14%;
+    --ring: 351 85% 58%;
+
+    /* Neutral shadows — dark mode */
+    --shadow-card: 0 1px 3px 0 hsl(0 0% 0% / 0.35), 0 1px 6px -1px hsl(0 0% 0% / 0.28);
+    --shadow-card-hover: 0 4px 16px -4px hsl(0 0% 0% / 0.45), 0 2px 8px -2px hsl(0 0% 0% / 0.35);
+    --shadow-elevated: 0 8px 24px -6px hsl(0 0% 0% / 0.5), 0 4px 12px -2px hsl(0 0% 0% / 0.4);
+  }
+
+  html {
+    scroll-behavior: smooth;
+    overflow-x: hidden;
+  }
+
+  body {
+    font-family: var(--font-body);
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    overflow-x: hidden;
+  }
+}
+
+@layer components {
+  /* ── Primary button — solid brand red, NEVER gradient ── */
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl font-bold text-white transition-all px-6 py-3;
+    background: #EF3752;
+  }
+  .btn-primary:hover {
+    background: #d42f48;
+  }
+  .btn-primary:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  /* ── Secondary button — muted surface, no gradient ── */
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl font-semibold text-white transition-all px-6 py-3;
+    background: #1A1B24;
+    border: 1px solid #1E2030;
+  }
+  .btn-secondary:hover {
+    background: #22232e;
+  }
+
+  /* ── Legacy alias (keep .btn-outline working without gradient) ── */
+  .btn-outline {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl font-semibold transition-all px-6 py-3;
+    border: 1px solid hsl(var(--border));
+    color: hsl(var(--foreground));
+    background: #1A1B24;
+  }
+  .btn-outline:hover {
+    background: #22232e;
+  }
+
+  /* ── Card ── */
+  .card-gifteeng {
+    background: hsl(var(--card));
+    border-radius: 1rem;
+    box-shadow: var(--shadow-card);
+    transition: box-shadow 0.2s ease, transform 0.2s ease;
+  }
+  .card-gifteeng:hover {
+    box-shadow: var(--shadow-card-hover);
+    transform: translateY(-2px);
+  }
+
+  /* ── Product card ── */
+  .card-product {
+    @apply bg-card rounded-2xl overflow-hidden transition-all duration-300;
+    border: 1px solid hsl(var(--border));
+    box-shadow: none;
+  }
+  .card-product:hover {
+    border-color: hsl(var(--border));
+    box-shadow: var(--shadow-card-hover);
+    transform: translateY(-2px);
+  }
+
+  /* ── Section tag pill ── */
+  .section-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    border-radius: 9999px;
+    background: hsl(349 85% 58% / 0.1);
+    padding: 0.25rem 0.75rem;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: #EF3752;
+    margin-bottom: 1rem;
+  }
+
+  /* ── Section headings — Inter only ── */
+  .section-heading {
+    @apply text-2xl font-black text-foreground md:text-3xl;
+    font-family: 'Inter', system-ui, sans-serif;
+  }
+  .section-subtitle {
+    @apply mt-2 text-sm text-muted-foreground;
+  }
+
+  /* ── Accent text (replaces gradient text) ── */
+  .text-gradient-vivid {
+    color: #EF3752;
+  }
+}
+
+/* ── Animations ─────────────────────────────────── */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in { animation: fade-in 0.5s ease-out; }
+
+@keyframes float-heart {
+  0%, 100% { transform: translateY(0); opacity: 0.3; }
+  50%       { transform: translateY(-12px); opacity: 0.8; }
+}
+.animate-float-heart { animation: float-heart 3s ease-in-out infinite; }
+
+/* ── Marquee ──────────────────────────────────────── */
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+.animate-marquee {
+  display: flex;
+  width: max-content;
+  animation: marquee 28s linear infinite;
+}
+
+/* ── Slide-up reveal ─────────────────────────────── */
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(28px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-slide-up { animation: slide-up 0.6s ease-out both; }
+
+/* ── Scale-in modal ──────────────────────────────── */
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.94); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.animate-scale-in { animation: scale-in 0.22s ease-out both; }
+
+/* ── Section helper ──────────────────────────────── */
+@keyframes slide-up-sm {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-slide-up-sm { animation: slide-up-sm 0.4s ease-out both; }
+
+/* ── Scrollbar hide ─────────────────────────────── */
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* ── Coin chip bounce (scale only — no glow ring) ── */
+@keyframes coin-chip-bounce {
+  0%   { transform: scale(1); }
+  30%  { transform: scale(1.18); }
+  60%  { transform: scale(0.95); }
+  100% { transform: scale(1); }
+}
+.coin-chip-pulse { animation: coin-chip-bounce 650ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards; }
+
+/* ── Progress ring ──────────────────────────────── */
+@keyframes ring-fill {
+  from { stroke-dashoffset: 251; }
+}
+.animate-ring-fill { animation: ring-fill 1.2s ease-out forwards; }
+
+/* ── Background orb drift (hero decoration only) ── */
+@keyframes orb-drift-1 {
+  0%, 100% { transform: translate(0px, 0px) scale(1); }
+  33%       { transform: translate(30px, -20px) scale(1.05); }
+  66%       { transform: translate(-20px, 15px) scale(0.97); }
+}
+@keyframes orb-drift-2 {
+  0%, 100% { transform: translate(0px, 0px) scale(1); }
+  40%       { transform: translate(-25px, 20px) scale(1.08); }
+  70%       { transform: translate(20px, -10px) scale(0.95); }
+}
+@keyframes orb-drift-3 {
+  0%, 100% { transform: translate(0px, 0px) scale(1); }
+  50%       { transform: translate(15px, 25px) scale(1.04); }
+}
+.animate-orb-1 { animation: orb-drift-1 12s ease-in-out infinite; will-change: transform; }
+.animate-orb-2 { animation: orb-drift-2 15s ease-in-out infinite; will-change: transform; }
+.animate-orb-3 { animation: orb-drift-3 10s ease-in-out infinite; will-change: transform; }

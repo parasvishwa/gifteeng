@@ -1,0 +1,206 @@
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  width: 420px;
+  max-height: 600px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+  font-size: 13px;
+  background: #fff;
+  color: #1a1a2e;
+  overflow-x: hidden;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid #eee;
+  background: linear-gradient(135deg, #fff5f7 0%, #fff 100%);
+}
+.logo { display: flex; align-items: center; gap: 6px; }
+.logo .dot { width: 8px; height: 8px; border-radius: 50%; background: #EF3752; }
+.logo .brand { font-weight: 900; font-size: 14px; }
+.logo .sub { color: #6b7280; font-size: 11px; }
+.icon-btn {
+  background: none; border: none; cursor: pointer; font-size: 16px;
+  color: #6b7280; padding: 4px 6px;
+}
+.icon-btn:hover { color: #1a1a2e; }
+
+.screen { padding: 14px; }
+.screen.hidden { display: none; }
+
+h2 { font-size: 16px; font-weight: 800; margin-bottom: 6px; }
+.muted { color: #6b7280; font-size: 11px; line-height: 1.4; }
+.muted.small { font-size: 10px; }
+code { background: #f3f4f6; padding: 1px 4px; border-radius: 3px; font-size: 10px; }
+
+input[type=text], input[type=password], input[type=number] {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 12px;
+  margin-top: 6px;
+  font-family: inherit;
+}
+input:focus { outline: none; border-color: #EF3752; }
+
+button { font-family: inherit; cursor: pointer; }
+button.primary {
+  width: 100%;
+  margin-top: 10px;
+  padding: 9px;
+  background: #EF3752;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-weight: 800;
+  font-size: 12px;
+}
+button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
+button.primary:hover:not(:disabled) { background: #d92d47; }
+.text-btn {
+  background: none; border: none; color: #EF3752; font-size: 11px;
+  font-weight: 700; padding: 4px 6px;
+}
+
+.error {
+  color: #dc2626; font-size: 11px; margin-top: 8px;
+  background: #fef2f2; padding: 6px 8px; border-radius: 4px;
+}
+.status { font-size: 11px; padding: 8px 10px; border-radius: 4px; margin-top: 10px; }
+.status.success { background: #ecfdf5; color: #047857; }
+.status.error { background: #fef2f2; color: #dc2626; }
+.hidden { display: none !important; }
+
+/* Source card */
+.source-card {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  background: #f9fafb;
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+.source-icon {
+  width: 36px; height: 36px; border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  background: #e5e7eb; color: #6b7280;
+  font-weight: 900; font-size: 16px;
+}
+.source-icon.amazon   { background: #fef3c7; color: #b45309; }
+.source-icon.flipkart { background: #dbeafe; color: #1d4ed8; }
+.source-icon.myntra   { background: #fce7f3; color: #be185d; }
+.source-icon.meesho   { background: #fce7f3; color: #be185d; }
+.source-icon.google   { background: #dbeafe; color: #2563eb; }
+.source-icon.unsupported { background: #fee2e2; color: #dc2626; }
+.source-meta { flex: 1; min-width: 0; }
+.source-label { font-weight: 800; font-size: 12px; }
+.source-url { font-family: ui-monospace, monospace; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Filter row */
+.filter-row { display: flex; gap: 8px; align-items: center; }
+.filter-label {
+  display: flex; align-items: center; gap: 6px;
+  background: #fff7ed; padding: 4px 8px; border-radius: 4px;
+  font-size: 11px; font-weight: 700; color: #b45309;
+  border: 1px solid #fed7aa;
+}
+.filter-label input { width: 50px; margin: 0; padding: 2px 4px; font-size: 11px; }
+.filter-row .primary { flex: 1; margin-top: 0; }
+
+/* Product tag */
+#productTag { margin-top: 14px; }
+.block-label { display: block; font-size: 11px; font-weight: 700; margin-bottom: 4px; color: #4b5563; }
+.dropdown {
+  position: relative;
+  max-height: 140px;
+  overflow-y: auto;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  margin-top: 4px;
+  background: white;
+}
+.dropdown-item {
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 11px;
+  border-bottom: 1px solid #f3f4f6;
+}
+.dropdown-item:hover { background: #f9fafb; }
+.selected-product {
+  display: flex; align-items: center; gap: 6px;
+  background: #ecfdf5; border: 1px solid #6ee7b7;
+  padding: 5px 8px; border-radius: 4px;
+  margin-top: 4px;
+  font-size: 11px; color: #047857; font-weight: 700;
+}
+.x-btn {
+  background: none; border: none; color: #047857;
+  font-size: 14px; line-height: 1; padding: 0;
+  margin-left: auto;
+}
+
+/* Review list */
+.review-list {
+  list-style: none;
+  margin-top: 14px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.review-item {
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  display: flex;
+  gap: 8px;
+}
+.review-item.checked { background: #fff5f7; border-color: #fbcfe8; }
+.review-item input[type=checkbox] {
+  margin-top: 3px;
+  width: 14px; height: 14px;
+  cursor: pointer;
+}
+.review-content { flex: 1; min-width: 0; }
+.review-meta {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  font-size: 10px; color: #6b7280;
+}
+.review-meta .stars { color: #f59e0b; font-weight: 800; }
+.review-meta .author { font-weight: 700; color: #1a1a2e; }
+.review-title { font-weight: 700; font-size: 12px; margin-top: 2px; }
+.review-body {
+  font-size: 11px; color: #374151; line-height: 1.4;
+  margin-top: 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.review-media {
+  display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap;
+}
+.review-media img, .review-media video {
+  width: 36px; height: 36px; object-fit: cover; border-radius: 4px;
+  border: 1px solid #e5e7eb;
+}
+.media-count {
+  font-size: 9px; color: #6b7280; padding: 2px 6px;
+  background: #f3f4f6; border-radius: 4px; margin-top: 4px;
+  display: inline-block;
+}
+
+/* Action bar */
+.action-bar {
+  position: sticky; bottom: 0;
+  background: white;
+  border-top: 1px solid #e5e7eb;
+  padding: 10px 14px;
+  margin: 14px -14px -14px;
+  display: flex; align-items: center; gap: 8px;
+}
+.bulk-actions { display: flex; gap: 4px; }
+.action-bar .counts { font-size: 11px; color: #6b7280; flex: 1; text-align: right; }
+.action-bar .primary { width: auto; margin: 0; padding: 6px 12px; }

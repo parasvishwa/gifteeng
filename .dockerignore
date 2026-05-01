@@ -1,0 +1,52 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Dependencies
+node_modules
+**/node_modules
+
+# Build output
+.next
+**/.next
+dist
+**/dist
+build
+**/build
+.turbo
+**/.turbo
+
+# Logs
+*.log
+**/*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# Runtime / user data
+uploads
+**/uploads
+
+# Apps not deployed to server
+apps/mobile
+
+# Sibling projects outside the monorepo
+E:/Gifteeng/B2B
+E:/Gifteeng/B2C
+
+# Editor / OS cruft
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+
+# Env files (inject via env_file / secrets instead)
+.env
+.env.*
+!.env.example
+
+# Tests / coverage
+coverage
+**/coverage
+.nyc_output
