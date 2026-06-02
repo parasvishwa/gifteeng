@@ -13,6 +13,7 @@ import {
   Separator, Checkbox, Tabs, TabsList, TabsTrigger, TabsContent,
 } from "@gifteeng/ui";
 import ProductTemplateEditor from "./ProductTemplateEditor";
+import { sanitizeHtml } from "../../../../../lib/sanitize-html";
 import VariantPricingSection from "./VariantPricingSection";
 import { adminGet } from "@/lib/admin-api";
 import { useToast } from "@gifteeng/ui";
@@ -441,7 +442,7 @@ export default function ProductEditPage({ product: initialProduct, isNew, catego
                     </Button>
                   </div>
                   {showHtmlPreview ? (
-                    <div className="w-full rounded-lg border border-border bg-background p-3 text-sm min-h-[100px] prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: editing.description }} />
+                    <div className="w-full rounded-lg border border-border bg-background p-3 text-sm min-h-[100px] prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: sanitizeHtml(editing.description) }} />
                   ) : (
                     <textarea value={editing.description} onChange={(e) => setEditing({ ...editing, description: e.target.value })}
                       className="w-full rounded-lg border border-border bg-background p-3 text-xs min-h-[100px] font-mono leading-relaxed focus:outline-none focus:ring-2 focus:ring-ring resize-y" placeholder="<p>Product description...</p>" />

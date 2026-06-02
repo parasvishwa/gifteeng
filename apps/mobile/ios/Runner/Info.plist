@@ -65,6 +65,10 @@
 	<key>NSFaceIDUsageDescription</key>
 	<string>Gifteeng uses Face ID to quickly sign you in.</string>
 
+	<!-- geolocator (auto-fill delivery address from current location) -->
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Gifteeng can use your location to auto-fill your delivery address. Location is never stored or shared.</string>
+
 	<!-- ── Push notifications — aps-environment entitlement is declared
 	     in Runner.entitlements (created in Xcode → Signing & Capabilities
 	     → + Capability → Push Notifications). Background modes below are

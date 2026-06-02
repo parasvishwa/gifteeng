@@ -169,10 +169,15 @@ export default function ExternalReviewsPage() {
 
   useEffect(() => { fetchAll(); /* eslint-disable-next-line */ }, [filterSource, filterStatus, view]);
 
-  // Bulk products list for product-select dropdowns
+  // Bulk products list for product-select dropdowns. Use the admin list so
+  // drafts / b2c-disabled rows still appear, and `adminGet` so the B2B JWT
+  // is attached (admin endpoints require auth).
   useEffect(() => {
-    fetch("/api/products?pageSize=100&page=1").then((r) => r.json()).then((d) => {
-      const items = (d.items ?? d ?? []) as Product[];
+    adminGet<{ items?: Product[] } | Product[]>(
+      "/products/admin/list?pageSize=200&page=1",
+      [] as Product[],
+    ).then((d) => {
+      const items = Array.isArray(d) ? d : ((d as any)?.items ?? []);
       setProducts(Array.isArray(items) ? items : []);
     }).catch(() => {});
   }, []);

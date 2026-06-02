@@ -27,6 +27,7 @@ function publicSiteProductUrl(slug: string): string {
   return `${publicSiteOrigin()}/products/${clean}`;
 }
 import { apiB2b, API_BASE_URL } from "@/lib/api";
+import { SeoPanel } from "./_components/SeoPanel";
 
 // ---------- Types ----------
 
@@ -88,6 +89,7 @@ export type Product = {
   title: string;
   description?: string | null;
   category?: string | null;
+  brandName?: string | null;
   basePrice?: number;
   currency?: string;
   sku?: string | null;
@@ -116,7 +118,9 @@ type FormState = {
   slug: string;
   description: string;
   category: string;
+  brandName: string;
   basePrice: string;
+  mrp: string;
   compareAtPrice: string;
   currency: string;
   sku: string;
@@ -135,6 +139,7 @@ type FormState = {
   seoTitle: string;
   seoDescription: string;
   seoKeywords: string;
+  fbtIds: string[];
 };
 
 type ProductEditorProps = {
@@ -185,8 +190,10 @@ function buildInitialForm(initial?: Partial<Product>): FormState {
     slug: initial?.slug ?? "",
     description: initial?.description ?? "",
     category: initial?.category ?? "",
+    brandName: initial?.brandName ?? "",
     basePrice:
       initial?.basePrice != null ? String(initial.basePrice) : "",
+    mrp: (initial as any)?.mrp != null ? String((initial as any).mrp) : "",
     compareAtPrice: meta.compareAtPrice != null ? String(meta.compareAtPrice) : "",
     currency: initial?.currency ?? "INR",
     sku: initial?.sku ?? "",
@@ -205,6 +212,9 @@ function buildInitialForm(initial?: Partial<Product>): FormState {
     seoTitle: meta.seo?.title ?? "",
     seoDescription: meta.seo?.description ?? "",
     seoKeywords: Array.isArray(meta.seo?.keywords) ? meta.seo!.keywords!.join(", ") : "",
+    fbtIds: Array.isArray((initial as any)?.frequentlyBoughtWith)
+      ? ((initial as any).frequentlyBoughtWith as { id: string }[]).map((p) => p.id)
+      : [],
   };
 }
 
@@ -265,7 +275,9 @@ function buildPayload(form: FormState, initial?: Partial<Product>): Record<strin
     title: form.title,
     description: form.description || undefined,
     category: form.category || undefined,
+    brandName: form.brandName.trim() || undefined,
     basePrice: coerceNumber(form.basePrice) ?? 0,
+    mrp: coerceNumber(form.mrp) ?? null,
     currency: form.currency || "INR",
     sku: form.sku || undefined,
     inventory: coerceNumber(form.inventory) ?? 0,
@@ -637,6 +649,10 @@ export default function ProductEditor({
         }
       }
       await persistCollections(savedId);
+      // Persist FBT product associations
+      try {
+        await apiB2b().patch(`/api/products/admin/${savedId}/fbt`, { fbtIds: form.fbtIds });
+      } catch { /* non-fatal — FBT is a bonus feature */ }
       setSuccess(mode === "create" ? "Product created" : "Changes saved");
       onSaved?.(savedProduct);
     } catch (err) {
@@ -750,7 +766,8 @@ export default function ProductEditor({
           />
           <ShippingSection form={form} patch={patch} />
           <CustomizationSection form={form} patch={patch} productId={productId} />
-          <SeoSection form={form} patch={patch} setError={setError} />
+          <FbtSection form={form} patch={patch} />
+          <SeoSection form={form} patch={patch} setError={setError} productId={productId ?? ""} productSlug={form.slug} />
         </div>
 
         <aside className="space-y-6 lg:sticky lg:top-4 lg:self-start">
@@ -859,7 +876,7 @@ function Section({
 function SectionJumper() {
   const items = [
     "Basics", "Media", "Description", "Pricing", "Inventory",
-    "Variations", "Shipping", "Customization", "SEO",
+    "Variations", "Shipping", "Customization", "Frequently Bought Together", "SEO",
   ];
   return (
     <nav className="sticky top-0 z-20 -mx-3 md:-mx-5 mb-4 bg-background/85 backdrop-blur border-y border-border/60 overflow-x-auto scrollbar-hide">
@@ -1140,6 +1157,14 @@ Rules:
             onChange={() => {}}
           />
         )}
+      </Field>
+      <Field label="Brand name" hint="Marketplace brand label shown to buyers — seller's brand or house brand">
+        <input
+          value={form.brandName}
+          onChange={(e) => patch({ brandName: e.target.value })}
+          placeholder="e.g. Gifteeng, or the seller's brand"
+          className={inputCls}
+        />
       </Field>
       <Field label="Category" hint="Pick from existing or add a new one">
         <CategoryPicker
@@ -1949,6 +1974,17 @@ function PricingSection({
             className={inputCls}
           />
         </Field>
+        <Field label="MRP (market retail price)" hint="Set to enable discount badge. discountPct = ((MRP − base) / MRP) × 100">
+          <input
+            type="number"
+            step="0.01"
+            min="0"
+            value={form.mrp}
+            onChange={(e) => patch({ mrp: e.target.value })}
+            placeholder="Leave blank if no discount"
+            className={inputCls}
+          />
+        </Field>
         <Field label="Compare-at price">
           <input
             type="number"
@@ -1971,6 +2007,141 @@ function PricingSection({
             <option value="GBP">GBP</option>
           </select>
         </Field>
+      </div>
+      {/* Discount preview — auto-computed from MRP vs base price */}
+      {form.mrp && form.basePrice && Number(form.mrp) > Number(form.basePrice) && (
+        <div className="rounded-md bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 px-3 py-2 text-xs text-rose-700 dark:text-rose-300 font-semibold">
+          Discount: {Math.round(((Number(form.mrp) - Number(form.basePrice)) / Number(form.mrp)) * 100)}% OFF
+          {Math.round(((Number(form.mrp) - Number(form.basePrice)) / Number(form.mrp)) * 100) >= 60 && (
+            <span className="ml-2 rounded-full bg-rose-500 text-white px-2 py-0.5 text-[10px] font-black">Qualifies for Deals of the Day</span>
+          )}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+// ---------- FBT picker ----------
+
+type FbtProductRef = {
+  id: string;
+  slug: string;
+  title: string;
+  basePrice?: number;
+};
+
+function FbtSection({
+  form,
+  patch,
+}: {
+  form: FormState;
+  patch: (f: Partial<FormState>) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [results, setResults] = useState<FbtProductRef[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [selectedProducts, setSelectedProducts] = useState<FbtProductRef[]>([]);
+
+  // Debounced search
+  useEffect(() => {
+    if (!search.trim()) { setResults([]); return; }
+    const t = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const res = await apiB2b().get<{ items?: FbtProductRef[] }>(`/api/products/admin/list?search=${encodeURIComponent(search.trim())}&pageSize=10`);
+        setResults(Array.isArray(res?.items) ? res.items : (Array.isArray(res) ? (res as any) : []));
+      } catch {
+        setResults([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 350);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  function addFbt(p: FbtProductRef) {
+    if (form.fbtIds.includes(p.id)) return;
+    if (form.fbtIds.length >= 4) return;
+    patch({ fbtIds: [...form.fbtIds, p.id] });
+    setSelectedProducts((prev) => [...prev, p]);
+    setSearch("");
+    setResults([]);
+  }
+
+  function removeFbt(id: string) {
+    patch({ fbtIds: form.fbtIds.filter((x) => x !== id) });
+    setSelectedProducts((prev) => prev.filter((p) => p.id !== id));
+  }
+
+  return (
+    <Section
+      title="Frequently Bought Together"
+      description="Pick up to 4 products that are commonly bought alongside this one. Ops curates this — it will be shown on the product page as a bundle suggestion."
+    >
+      <div className="space-y-3">
+        {/* Selected FBT products */}
+        {form.fbtIds.length > 0 && (
+          <div className="space-y-2">
+            {form.fbtIds.map((id) => {
+              const p = selectedProducts.find((x) => x.id === id);
+              const label = p?.title ?? id;
+              return (
+                <div key={id} className="flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                  <span className="truncate text-foreground">{label}</span>
+                  <button
+                    type="button"
+                    onClick={() => removeFbt(id)}
+                    className="ml-2 shrink-0 text-muted-foreground hover:text-destructive transition-colors text-xs font-semibold"
+                  >
+                    Remove
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Search box — hidden when max (4) reached */}
+        {form.fbtIds.length < 4 && (
+          <div className="relative">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search products to add…"
+              className={inputCls}
+            />
+            {(searching || results.length > 0) && (
+              <div className="absolute z-30 mt-1 w-full rounded-md border border-border bg-popover shadow-lg max-h-64 overflow-y-auto">
+                {searching && (
+                  <div className="px-3 py-2 text-xs text-muted-foreground">Searching…</div>
+                )}
+                {!searching && results.length === 0 && search.trim() && (
+                  <div className="px-3 py-2 text-xs text-muted-foreground">No products found</div>
+                )}
+                {!searching && results.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => addFbt(p)}
+                    disabled={form.fbtIds.includes(p.id)}
+                    className="w-full flex items-center justify-between px-3 py-2 text-sm hover:bg-muted/60 disabled:opacity-40 text-left"
+                  >
+                    <span className="truncate">{p.title}</span>
+                    {p.basePrice != null && (
+                      <span className="ml-2 shrink-0 text-xs text-muted-foreground">
+                        ₹{Number(p.basePrice).toLocaleString("en-IN")}
+                      </span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {form.fbtIds.length >= 4 && (
+          <p className="text-xs text-muted-foreground">Maximum 4 FBT products added.</p>
+        )}
       </div>
     </Section>
   );
@@ -2658,10 +2829,14 @@ function SeoSection({
   form,
   patch,
   setError,
+  productId,
+  productSlug,
 }: {
   form: FormState;
   patch: (f: Partial<FormState>) => void;
   setError: (s: string | null) => void;
+  productId: string;
+  productSlug: string;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -2689,6 +2864,24 @@ function SeoSection({
 
   return (
     <Section title="SEO">
+      {/* Auto-SEO intelligence panel — shows score, SERP preview, and one-click AI regeneration */}
+      {productId && (
+        <div className="mb-6">
+          <SeoPanel
+            productId={productId}
+            productSlug={productSlug}
+            onRegenerated={(seo) => {
+              // Sync the manual override fields with newly generated data
+              if (seo.title) patch({ seoTitle: seo.title });
+              if (seo.description) patch({ seoDescription: seo.description });
+              if (seo.keywords?.length) patch({ seoKeywords: seo.keywords.join(", ") });
+            }}
+          />
+          <p className="text-[10px] text-muted-foreground/60 mt-3 text-center">
+            ↓ Override specific fields manually below (overrides auto-generated values on next save)
+          </p>
+        </div>
+      )}
       <Field
         label="Meta title"
         action={

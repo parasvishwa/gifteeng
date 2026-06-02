@@ -15,6 +15,10 @@ export type B2bUser = {
   role: B2bRole;
   email?: string;
   fullName?: string;
+  /// Effective permissions for this user — merged from role defaults and
+  /// per-user grants on the server. Populated by /auth/b2b/me on first load.
+  /// Empty until /me responds; super_admin role bypasses checks entirely.
+  permissions?: string[];
 };
 
 const TOKEN_KEY = "gifteeng.b2b.token";
@@ -71,6 +75,8 @@ export function setB2bToken(token: string): void {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(TOKEN_KEY, token);
+    const secure = location.protocol === "https:" ? "; Secure" : "";
+    document.cookie = `b2b_auth=1; Path=/; SameSite=Lax; Max-Age=2592000${secure}`;
   } catch {
     // ignore
   }
@@ -80,6 +86,7 @@ export function clearB2bToken(): void {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.removeItem(TOKEN_KEY);
+    document.cookie = "b2b_auth=; Path=/; SameSite=Lax; Max-Age=0";
   } catch {
     // ignore
   }
@@ -132,6 +139,20 @@ export function hasRole(role: B2bRole | B2bRole[]): boolean {
   return roles.includes(user.role);
 }
 
+/// Check if a B2bUser has at least one of the listed permission strings.
+/// super_admin always returns true. Empty `required` list always returns true.
+export function userHasPermission(
+  user: { role: B2bRole; permissions?: string[] | null } | null | undefined,
+  required: string | string[],
+): boolean {
+  if (!user) return false;
+  if (user.role === "super_admin") return true;
+  const req = Array.isArray(required) ? required : [required];
+  if (req.length === 0) return true;
+  const grants = user.permissions ?? [];
+  return req.some((p) => grants.includes(p));
+}
+
 export function roleLandingPath(role: B2bRole | null | undefined): string {
   switch (role) {
     case "super_admin":
@@ -159,8 +180,34 @@ export function useB2bAuth(): UseB2bAuth {
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
   useEffect(() => {
-    setUser(getB2bUser());
+    const fromToken = getB2bUser();
+    if (!fromToken) {
+      // Clear presence cookie so middleware redirects to login on next navigation.
+      document.cookie = "b2b_auth=; Path=/; SameSite=Lax; Max-Age=0";
+    }
+    setUser(fromToken);
     setIsLoading(false);
+
+    // Older tokens may not carry email/fullName. Hydrate from /auth/b2b/me
+    // so the sidebar never has to fall back to the raw UUID.
+    if (fromToken) {
+      const token = getB2bToken();
+      if (!token) return;
+      // Always hydrate from /me to pick up the latest permissions array —
+      // tokens don't carry permissions (so revokes apply instantly).
+      fetch("/api/auth/b2b/me", { headers: { Authorization: `Bearer ${token}` } })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data: { email?: string; fullName?: string; permissions?: string[] } | null) => {
+          if (!data) return;
+          setUser((u) => (u ? {
+            ...u,
+            email:       data.email       ?? u.email,
+            fullName:    data.fullName    ?? u.fullName,
+            permissions: data.permissions ?? u.permissions,
+          } : u));
+        })
+        .catch(() => { /* ignore — token-only fields will still render */ });
+    }
   }, []);
 
   const signOut = (): void => {

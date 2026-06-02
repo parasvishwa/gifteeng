@@ -282,17 +282,29 @@ export default function ThankYouCardsTab() {
     const ctx = `Thank-you card template. Size: ${editItem?.size || "4x6"}. Occasion/theme: ${aiPrompt}`;
 
     // Run text + image generations in parallel so the admin doesn't wait
-    // 30 s in sequence. Image uses an explicit thank-you-card art-direction
-    // prompt so the model produces a printable greeting-card hero image —
-    // light background, no camera/human subject, generous negative space
-    // on the bottom half where the customer's text will be overlaid.
+    // 30 s in sequence. The image prompt is intentionally detailed because
+    // the model is very prompt-sensitive at greeting-card aesthetics —
+    // generic prompts produce flat clip-art, specific art-direction
+    // language ("debossed gold foil", "watercolour wash", "Pantone-grade
+    // colour") produces print-ready hero art. We bias toward a premium
+    // boutique aesthetic and explicitly forbid the failure modes we've
+    // seen: stock-photo people, pre-written text/signatures, busy
+    // composition that would clash with the customer's overlaid message.
     const imagePrompt = [
-      `A beautiful thank-you card design for occasion/theme: ${aiPrompt}.`,
-      "Soft pastel background, elegant floral or abstract motifs on the top half,",
-      "GENEROUS EMPTY SPACE on the BOTTOM HALF for the customer's handwritten message.",
-      "No people, no camera, no signature, no pre-written text on the card.",
-      "Aspect ratio 4:6 portrait. Print-ready. Minimalist, premium greeting-card aesthetic.",
-      "Clean edges, centered composition.",
+      `Premium boutique thank-you greeting-card design. Occasion / theme: ${aiPrompt}.`,
+      "Art direction: elegant, refined, magazine-quality, suitable for a luxury",
+      "stationery brand. Choose ONE coherent aesthetic — botanical watercolour,",
+      "minimal modern geometric, gold-foil monogram, or muted hand-painted",
+      "florals — whichever best fits the theme. Use a sophisticated palette",
+      "(dusty rose / sage / cream / champagne / deep navy) rather than primary",
+      "colours. Subtle texture: linen paper grain, soft drop-shadow.",
+      "Composition: motif occupies the TOP 40% and frames the edges; the BOTTOM 50%",
+      "is intentionally left as clean negative space (light cream or white) so the",
+      "customer's handwritten message can be overlaid legibly.",
+      "Avoid: stock-photo people, faces, hands, photography, dense backgrounds,",
+      "pre-written words on the card, signatures, watermarks, neon colours,",
+      "cartoonish clip-art, busy patterns.",
+      "Format: 4:6 portrait, print-ready 300dpi, clean bleed edges, centered.",
     ].join(" ");
 
     const [labelRes, msgRes, imgRes] = await Promise.all([
@@ -533,6 +545,73 @@ export default function ThankYouCardsTab() {
                           </Button>
                         </div>
                       )}
+
+                      {/* Generated card art — was being silently dropped before:
+                          the API call ran and `imageUrl` was stored in state,
+                          but the UI never rendered it, so admins saw only the
+                          text suggestions and concluded "AI doesn't generate
+                          a card image". Now we show a thumbnail with explicit
+                          apply buttons for the Template and Background slots. */}
+                      {aiResult.imageUrl && (
+                        <div className="space-y-1">
+                          <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">
+                            Generated card design:
+                          </p>
+                          <div className="flex gap-2 items-start rounded-md bg-card border border-border/40 p-2">
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={aiResult.imageUrl}
+                              alt="AI-generated thank-you card"
+                              className="w-20 aspect-[3/4] object-cover rounded shrink-0 border border-border/40"
+                            />
+                            <div className="flex-1 flex flex-col gap-1.5 min-w-0">
+                              <Button
+                                type="button" size="sm" variant="default"
+                                className="h-7 text-[10px] gap-1 justify-start px-2"
+                                onClick={() => setEditItem(p => ({ ...p, template_image: aiResult.imageUrl }))}
+                              >
+                                Use as Template
+                              </Button>
+                              <Button
+                                type="button" size="sm" variant="outline"
+                                className="h-7 text-[10px] gap-1 justify-start px-2"
+                                onClick={() => setEditItem(p => ({ ...p, background_image: aiResult.imageUrl }))}
+                              >
+                                Use as Background
+                              </Button>
+                              <Button
+                                type="button" size="sm" variant="ghost"
+                                className="h-6 text-[9px] gap-1 justify-start px-2 text-muted-foreground"
+                                onClick={() => void generateAI()}
+                                disabled={aiLoading}
+                              >
+                                <Sparkles className="w-2.5 h-2.5" /> Try another
+                              </Button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Image generation can fail (rate limit, content
+                          policy) while text generation succeeds. In that
+                          case we keep the text suggestions but make it
+                          clear that the image isn't here yet, with a
+                          one-tap retry. */}
+                      {!aiResult.imageUrl && !aiLoading && (
+                        <div className="flex items-center justify-between rounded-md border border-dashed border-border/50 bg-muted/20 px-2 py-1.5">
+                          <p className="text-[10px] text-muted-foreground">
+                            Image generation didn't return a design.
+                          </p>
+                          <Button
+                            type="button" size="sm" variant="outline"
+                            className="h-6 px-2 text-[9px]"
+                            onClick={() => void generateAI()}
+                          >
+                            Retry image
+                          </Button>
+                        </div>
+                      )}
+
                       {aiResult.messages.length > 0 && (
                         <div className="space-y-1">
                           <p className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground">Sample messages for customers:</p>
@@ -543,6 +622,18 @@ export default function ThankYouCardsTab() {
                           ))}
                         </div>
                       )}
+                    </div>
+                  )}
+
+                  {/* In-flight skeleton — without this the admin clicks
+                      Generate and then stares at nothing for ~20 s while the
+                      image model runs. */}
+                  {aiLoading && (
+                    <div className="flex items-center gap-2 rounded-md bg-card/50 border border-dashed border-border/50 px-2 py-2">
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-primary shrink-0" />
+                      <p className="text-[10px] text-muted-foreground leading-snug">
+                        Generating card design and sample messages — ~15&nbsp;s.
+                      </p>
                     </div>
                   )}
                 </div>

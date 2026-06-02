@@ -36,17 +36,19 @@ const nextConfig = {
   },
 
   // ── Security + cache headers ─────────────────────────────────────────────
+  // NOTE: CSP itself is set in middleware.ts so a per-request nonce can be
+  // injected. The static security headers (HSTS, X-Frame-Options, etc.) stay
+  // here since they don't vary by request. See docs/SECURITY_AUDIT.md M-3.
+  //
+  // Next 15 automatically propagates the nonce from the response CSP header
+  // onto its own framework-generated script tags (__NEXT_DATA__, hydration
+  // scripts) provided the header contains a `'nonce-<value>'` token — which
+  // middleware.ts emits. No experimental flag is required in 15.x.
   async headers() {
-    // Best-practice headers applied to every page response. CSP is
-    // permissive enough to keep GTM / GA4 / Meta Pixel / Razorpay /
-    // Google Maps working but tight enough to block <iframe> and
-    // foreign script injection. If you add a new third-party script,
-    // append its host to script-src + connect-src below.
-    const SECURITY_HEADERS = [
+    const STATIC_SECURITY_HEADERS = [
       {
-        // HSTS — force HTTPS for 2 years across all subdomains. Only
-        // safe when ALL subdomains terminate TLS, which gifteeng.com
-        // does (handled by the Contabo nginx + Let's Encrypt setup).
+        // HSTS — force HTTPS for 2 years across all subdomains. Only safe
+        // when every subdomain terminates TLS (gifteeng.com does).
         key: "Strict-Transport-Security",
         value: "max-age=63072000; includeSubDomains; preload",
       },
@@ -56,8 +58,7 @@ const nextConfig = {
       { key: "X-Content-Type-Options", value: "nosniff" },
       // Don't leak the user's previous URL to third-party trackers.
       { key: "Referrer-Policy",        value: "strict-origin-when-cross-origin" },
-      // Disable browser features we never use — camera, USB, MIDI, etc.
-      // Geolocation is allowed for the address-fill flow.
+      // Disable browser features we never use.
       {
         key: "Permissions-Policy",
         value: [
@@ -72,36 +73,13 @@ const nextConfig = {
           "geolocation=(self)",
         ].join(", "),
       },
-      // Modern replacement for X-XSS-Protection. CSP locks down where
-      // scripts / styles / connections may originate.
-      {
-        key: "Content-Security-Policy",
-        value: [
-          "default-src 'self'",
-          // Inline scripts unavoidable for Razorpay + GTM bootstrap.
-          "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.googletagmanager.com https://www.google-analytics.com https://*.google.com https://www.googleadservices.com https://googleads.g.doubleclick.net https://connect.facebook.net https://checkout.razorpay.com https://api.razorpay.com",
-          "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-          "font-src 'self' data: https://fonts.gstatic.com",
-          // Permit images from any HTTPS host since user-uploaded
-          // product photos can come from external CDNs.
-          "img-src 'self' data: blob: https: http:",
-          "connect-src 'self' https://*.gifteeng.com https://*.googletagmanager.com https://www.google-analytics.com https://*.analytics.google.com https://stats.g.doubleclick.net https://www.facebook.com https://connect.facebook.net https://api.razorpay.com https://lumberjack.razorpay.com https://lumberjack-cx.razorpay.com https://nominatim.openstreetmap.org",
-          "frame-src 'self' https://api.razorpay.com https://checkout.razorpay.com https://www.googletagmanager.com",
-          "media-src 'self' https: blob:",
-          "object-src 'none'",
-          "base-uri 'self'",
-          "form-action 'self'",
-          "frame-ancestors 'none'",
-          "upgrade-insecure-requests",
-        ].join("; "),
-      },
     ];
 
     return [
       {
-        // Apply the security headers to every route.
+        // Apply the static security headers to every route.
         source: "/:path*",
-        headers: SECURITY_HEADERS,
+        headers: STATIC_SECURITY_HEADERS,
       },
       {
         // Immutable static chunks (hashed filenames)
@@ -145,14 +123,16 @@ const nextConfig = {
   // ── 301 redirects for canonical SEO ───────────────────────────────────────
   // Old / non-canonical paths get permanent redirects so Google
   // consolidates link equity onto a single URL per page. The actual
-  // product detail lives at /b2c/products/<slug>; redirect any of the
+  // product detail lives at /products/<slug>; redirect any of the
   // legacy variants there.
   async redirects() {
     return [
-      { source: "/shop",            destination: "/b2c/products",        permanent: true },
-      { source: "/shop/:slug",      destination: "/b2c/products/:slug", permanent: true },
-      { source: "/product/:slug",   destination: "/b2c/products/:slug", permanent: true },
-      { source: "/products/:slug",  destination: "/b2c/products/:slug", permanent: true },
+      { source: "/shop",            destination: "/products",        permanent: true },
+      { source: "/shop/:slug",      destination: "/products/:slug", permanent: true },
+      { source: "/product/:slug",   destination: "/products/:slug", permanent: true },
+      // Legacy /b2c/* URLs — permanent redirect to clean paths
+      { source: "/b2c",             destination: "/",               permanent: true },
+      { source: "/b2c/:path*",      destination: "/:path*",         permanent: true },
     ];
   },
 
@@ -174,6 +154,24 @@ const nextConfig = {
       },
     ];
   },
+
+  // ── Webpack: stub canvas native binary ───────────────────────────────────
+  // isomorphic-dompurify → jsdom → canvas. The canvas native addon is not
+  // available on Windows dev machines. Aliasing to false gives webpack an
+  // empty module so the page still builds and DOMPurify works server-side
+  // (jsdom has its own HTML parser; canvas is only needed for <canvas> APIs).
+  webpack(config) {
+    config.resolve.alias = { ...config.resolve.alias, canvas: false };
+    return config;
+  },
+
+  // ── Server-side externals ─────────────────────────────────────────────────
+  // isomorphic-dompurify → jsdom. When webpack bundles jsdom, __dirname
+  // resolves to Next.js's output dir instead of the jsdom package dir, so
+  // jsdom can't find its own browser/default-stylesheet.css on Windows.
+  // Marking these packages as external means Node.js resolves them natively
+  // at runtime (correct __dirname), while the browser build is unaffected.
+  serverExternalPackages: ["isomorphic-dompurify", "jsdom", "canvas"],
 
   experimental: {
     serverActions: { allowedOrigins: ["www.gifteeng.com", "business.gifteeng.com"] },

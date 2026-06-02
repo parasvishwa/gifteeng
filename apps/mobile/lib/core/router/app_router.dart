@@ -16,6 +16,7 @@ import '../../features/reviews/reviews_feature.dart' show ReviewsScreen;
 import '../../features/games/presentation/screens/play_screen.dart';
 import '../../features/account/presentation/screens/account_screen.dart';
 import '../../features/account/presentation/screens/profile_subscreens.dart';
+import '../../features/account/presentation/screens/privacy_screen.dart';
 import '../../features/goins/presentation/screens/goins_screen.dart';
 import '../../features/cart/presentation/screens/cart_screen.dart';
 import '../../features/cart/presentation/screens/checkout_screen.dart';
@@ -47,23 +48,36 @@ class _AuthNotifier extends ChangeNotifier {
       authTokenNotifierProvider,
       (_, __) => notifyListeners(),
     );
+    // Also re-evaluate when the guest-mode pref changes (Continue-as-guest
+    // tap from AuthScreen flips this).
+    _ref.listen<AsyncValue<bool>>(
+      guestModeNotifierProvider,
+      (_, __) => notifyListeners(),
+    );
   }
 
   final Ref _ref;
 
   bool get isLoggedIn =>
       _ref.read(authTokenNotifierProvider).valueOrNull != null;
+
+  // True if user opted into guest browsing (Apple-required: can browse
+  // without an account). Treated as "authenticated enough" for the
+  // redirect rule below; specific account-required actions still gate
+  // individually (e.g. checkout, wishlist, orders, account profile).
+  bool get isGuest =>
+      _ref.read(guestModeNotifierProvider).valueOrNull ?? false;
 }
 
 // ─── Router provider ──────────────────────────────────────────────────────────
 // keepAlive: true  → never recreated; auth state changes trigger refreshListenable
 // instead of rebuilding the whole router (which would reset to initialLocation).
 
-@Riverpod(keepAlive: true)
 // Root navigator key — used so deep routes (Customizer, Checkout) can opt
 // out of the bottom-tab shell and render fullscreen instead.
 final _rootNavigatorKey = GlobalKey<NavigatorState>();
 
+@Riverpod(keepAlive: true)
 GoRouter appRouter(Ref ref) {
   final authNotifier = _AuthNotifier(ref);
   ref.onDispose(authNotifier.dispose);
@@ -71,7 +85,20 @@ GoRouter appRouter(Ref ref) {
   return GoRouter(
     navigatorKey: _rootNavigatorKey,
     initialLocation: '/splash',
-    refreshListenable: authNotifier,
+    // refreshListenable INTENTIONALLY removed.
+    //
+    // Previously the router watched the auth token via _AuthNotifier and
+    // ran redirect() on every change. On sign-out, this fired a redirect
+    // from /account (shell) → /auth (root). That shell-to-root transition
+    // triggers a Samsung One UI compositor bug — the activity gets
+    // reparented to OffscreenRoot, producing a frozen black screen.
+    //
+    // Now ShellScreen handles logged-out state inline (renders AuthScreen
+    // in place of the shell + bottom nav). The router only runs redirect()
+    // on explicit navigation events (deep links, context.go calls). That
+    // keeps the deep-link guards working without triggering the bug on
+    // every auth-state change.
+    //
     // Sentry navigator observer — every route change becomes a breadcrumb +
     // a performance transaction. Huge help when debugging "user crashed,
     // what were they doing?" — we see the exact screen path leading to it.
@@ -81,11 +108,13 @@ GoRouter appRouter(Ref ref) {
       final onAuth   = state.fullPath?.startsWith('/auth') ?? false;
 
       final isLoggedIn = authNotifier.isLoggedIn;
+      final isGuest    = authNotifier.isGuest;
+      final canAccess  = isLoggedIn || isGuest;
 
       // Splash handles its own navigation — never redirect away from it.
       if (onSplash) return null;
-      // Unauthenticated user on a protected screen → send to auth.
-      if (!isLoggedIn && !onAuth) return '/auth';
+      // Neither logged in nor browsing as guest → send to auth.
+      if (!canAccess && !onAuth) return '/auth';
       // Authenticated user trying to reach auth screens → go home.
       if (isLoggedIn && onAuth) return '/';
       return null;
@@ -207,6 +236,7 @@ GoRouter appRouter(Ref ref) {
       GoRoute(path: '/reminders', builder: (_, __) => const RemindersScreen()),
       GoRoute(path: '/settings/language', builder: (_, __) => const LanguageScreen()),
       GoRoute(path: '/settings/theme',    builder: (_, __) => const ThemeScreen()),
+      GoRoute(path: '/privacy',           builder: (_, __) => const PrivacyScreen()),
       GoRoute(path: '/ai-design',         builder: (_, __) => const AiDesignScreen()),
       GoRoute(path: '/collections',       builder: (_, __) => const CollectionsScreen()),
       GoRoute(path: '/categories',        builder: (_, __) => const CategoriesScreen()),

@@ -10,7 +10,8 @@
     "prisma": "prisma",
     "seed": "tsx prisma/seed.ts",
     "migrate:data": "tsx scripts/migrate.ts",
-    "strip:cart-base64": "tsx scripts/strip-cart-base64.ts"
+    "strip:cart-base64": "tsx scripts/strip-cart-base64.ts",
+    "backfill:alt-text": "tsx scripts/backfill-alt-text.ts"
   },
   "prisma": {
     "schema": "prisma/schema.prisma",

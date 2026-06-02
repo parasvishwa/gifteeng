@@ -121,45 +121,66 @@ class CollectionsScreen extends ConsumerWidget {
   List<Widget> _buildShimmer() {
     return [
       SliverToBoxAdapter(
-        child: Shimmer.fromColors(
-          baseColor: const Color(0xFF1A1B24),
-          highlightColor: const Color(0xFF252636),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 24, 16, 0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Fake group header
-                Container(
-                  width: 120,
-                  height: 18,
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                GridView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2,
-                    crossAxisSpacing: 12,
-                    mainAxisSpacing: 12,
-                    childAspectRatio: 4 / 3,
-                  ),
-                  itemCount: 6,
-                  itemBuilder: (_, __) => Container(
+        child: Builder(builder: (context) {
+          final c = GColors.of(context);
+          return Shimmer.fromColors(
+            baseColor: c.bg2,
+            highlightColor: c.bg1,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Fake group header
+                  Container(
+                    width: 140,
+                    height: 18,
                     decoration: BoxDecoration(
                       color: Colors.white,
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(6),
                     ),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 12),
+                  // 3-col 4:5 grid (matches the data state)
+                  GridView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 3,
+                      crossAxisSpacing: 10,
+                      mainAxisSpacing: 10,
+                      childAspectRatio: 0.62, // close to 4:5 + label
+                    ),
+                    itemCount: 6,
+                    itemBuilder: (_, __) => Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        AspectRatio(
+                          aspectRatio: 4 / 5,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Container(
+                          width: 48,
+                          height: 9,
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-        ),
+          );
+        }),
       ),
     ];
   }
@@ -230,35 +251,65 @@ class CollectionsScreen extends ConsumerWidget {
     final groups = _groupCollections(items);
     final slivers = <Widget>[];
 
+    // Compute the 4:5 portrait card height so we can use mainAxisExtent
+    // (avoids the pixel-rounding crop that the categories screen had).
+    final screenW = MediaQuery.sizeOf(context).width;
+    const int    cols       = 3;
+    const double hPad       = 16 * 2;
+    const double hSpacing   = 10 * 2;
+    final double cardW      = (screenW - hPad - hSpacing) / cols;
+    final double imageH     = cardW * 5 / 4;
+    const double nameAreaH  = 34.0;
+    final double cellH      = imageH + nameAreaH;
+
     var groupIndex = 0;
     groups.forEach((groupName, collections) {
-      // Section header
+      // Section header (just typography — no heavy banner)
       slivers.add(
         SliverToBoxAdapter(
           child: Padding(
-            padding: EdgeInsets.fromLTRB(16, groupIndex == 0 ? 24 : 32, 16, 12),
-            child: Text(
-              groupName,
-              style: GoogleFonts.inter(
-                fontSize: 17,
-                fontWeight: FontWeight.w800,
-                color: c.text0,
-              ),
+            padding: EdgeInsets.fromLTRB(16, groupIndex == 0 ? 20 : 28, 16, 12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Expanded(
+                  child: Text(
+                    groupName,
+                    style: GoogleFonts.inter(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                      color: c.text0,
+                      letterSpacing: -0.3,
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text(
+                    '${collections.length} ${collections.length == 1 ? 'collection' : 'collections'}',
+                    style: GoogleFonts.inter(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                      color: c.text2,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ),
       );
 
-      // 2-column grid
+      // 3-column 4:5 portrait grid (matches Shop by Category)
       slivers.add(
         SliverPadding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           sliver: SliverGrid(
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
-              crossAxisSpacing: 12,
-              mainAxisSpacing: 12,
-              childAspectRatio: 4 / 3,
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount:   cols,
+              crossAxisSpacing: 10,
+              mainAxisSpacing:  10,
+              mainAxisExtent:   cellH,
             ),
             delegate: SliverChildBuilderDelegate(
               (ctx, i) {
@@ -279,9 +330,13 @@ class CollectionsScreen extends ConsumerWidget {
   }
 }
 
-// ─── Collection card ──────────────────────────────────────────────────────────
+// ─── Collection card — 4:5 portrait image + name below ───────────────────────
+// Matches the Shop by Category card style: clean image-first card with the
+// name as a separate label underneath, no overlay text.
+// Emil: AnimatedScale(0.96) on press — every touchable element must feel
+// responsive. Scale origin stays center, so the card "sinks" in place.
 
-class _CollectionCard extends StatelessWidget {
+class _CollectionCard extends StatefulWidget {
   final Map<String, dynamic> collection;
   final Duration animDelay;
 
@@ -291,114 +346,82 @@ class _CollectionCard extends StatelessWidget {
   });
 
   @override
+  State<_CollectionCard> createState() => _CollectionCardState();
+}
+
+class _CollectionCardState extends State<_CollectionCard> {
+  bool _pressed = false;
+
+  @override
   Widget build(BuildContext context) {
-    final c = GColors.of(context);
-    final name = collection['name'] as String? ?? '';
-    final image = collection['image'] as String?;
-    final count = collection['product_count'] as int? ??
-        (collection['product_count'] as num?)?.toInt() ?? 0;
+    final c    = GColors.of(context);
+    final name = widget.collection['name'] as String? ?? '';
+    final image = widget.collection['image'] as String?;
 
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: () {
-          HapticFeedback.selectionClick();
-          context.push('/shop?cat=${Uri.encodeComponent(name)}');
-        },
-        borderRadius: BorderRadius.circular(12),
-        child: Ink(
-          decoration: BoxDecoration(
-            color: c.bg2,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                // ── Hero image / gradient placeholder ──────────────────────
-                if (image != null && image.isNotEmpty)
-                  CachedNetworkImage(
-                    imageUrl: image,
-                    fit: BoxFit.cover,
-                    placeholder: (_, __) => _GradientPlaceholder(name: name),
-                    errorWidget: (_, __, ___) =>
-                        _GradientPlaceholder(name: name),
-                  )
-                else
-                  _GradientPlaceholder(name: name),
-
-                // ── Bottom gradient overlay ─────────────────────────────────
-                Positioned.fill(
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(
-                        begin: Alignment.topCenter,
-                        end: Alignment.bottomCenter,
-                        colors: [
-                          Colors.transparent,
-                          Colors.transparent,
-                          Colors.black.withValues(alpha: 0.55),
-                        ],
-                        stops: const [0.0, 0.45, 1.0],
-                      ),
-                    ),
-                  ),
+    return GestureDetector(
+      onTapDown:   (_) => setState(() => _pressed = true),
+      onTapUp:     (_) => setState(() => _pressed = false),
+      onTapCancel: () => setState(() => _pressed = false),
+      onTap: () {
+        HapticFeedback.selectionClick();
+        context.push('/shop?cat=${Uri.encodeComponent(name)}');
+      },
+      child: AnimatedScale(
+        scale:    _pressed ? 0.96 : 1.0,
+        duration: const Duration(milliseconds: 110),
+        curve:    Curves.easeOut,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // ── 4:5 portrait image area ─────────────────────────────────
+            AspectRatio(
+              aspectRatio: 4 / 5,
+              child: Container(
+                decoration: BoxDecoration(
+                  color: c.bg1,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: c.border, width: 1),
                 ),
-
-                // ── Name + product count ───────────────────────────────────
-                Positioned(
-                  left: 10,
-                  right: 10,
-                  bottom: 10,
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      Expanded(
-                        child: Text(
-                          name,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: GoogleFonts.inter(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white,
-                            height: 1.25,
-                          ),
-                        ),
-                      ),
-                      if (count > 0) ...[
-                        const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 7, vertical: 3),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.55),
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(
-                              color: Colors.white.withValues(alpha: 0.2),
-                            ),
-                          ),
-                          child: Text(
-                            '$count',
-                            style: GoogleFonts.inter(
-                              fontSize: 10,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(13),
+                  child: (image != null && image.isNotEmpty)
+                      ? CachedNetworkImage(
+                          imageUrl: image,
+                          fit: BoxFit.cover,
+                          placeholder: (_, __) =>
+                              _GradientPlaceholder(name: name),
+                          errorWidget: (_, __, ___) =>
+                              _GradientPlaceholder(name: name),
+                        )
+                      : _GradientPlaceholder(name: name),
                 ),
-              ],
+              ),
             ),
-          ),
+            const Gap(7),
+            // ── Name label below the image ──────────────────────────────
+            // SizedBox forces full-column width so textAlign:center actually
+            // centers within the available space (not just within the text).
+            SizedBox(
+              width: double.infinity,
+              child: Text(
+                name,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: GoogleFonts.inter(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: c.text0,
+                  height: 1.2,
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     )
-        .animate(delay: animDelay)
+        .animate(delay: widget.animDelay)
         .fadeIn(duration: 300.ms)
         .slideY(begin: 0.06, end: 0, duration: 300.ms, curve: Curves.easeOut);
   }

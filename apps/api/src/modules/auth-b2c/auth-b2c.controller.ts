@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Headers, NotFoundException, Patch, Post, Req, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Get, Headers, NotFoundException, Patch, Post, Req, UseGuards } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import { z } from "zod";
@@ -179,6 +179,39 @@ export class AuthB2cController {
     @Headers("user-agent")     userAgent?: string,
   ) {
     const result = await this.service.verifyGoogleCredential(body.credential, sessionKey);
+    if (result.isNewSignup) {
+      const kind = detectPlatform(userAgent);
+      try { await this.milestone.maybeAward(result.customerId, kind); } catch { /* non-fatal */ }
+    }
+    return result;
+  }
+
+  /**
+   * Sign in with Apple — verifies an Apple `identityToken` from the native
+   * iOS Capacitor flow (or Apple JS for the web). Required by Apple App Store
+   * if any other social login is offered.
+   *
+   * Body shape (from @capacitor-community/apple-sign-in):
+   *   { identityToken: string, email?: string|null, fullName?: string|null }
+   *
+   * `email`/`fullName` are only present on the very first sign-in for a given
+   * Apple ID; subsequent logins receive only the token.
+   */
+  @Post("apple/verify")
+  async appleVerify(
+    @Body() body: { identityToken: string; email?: string | null; fullName?: string | null },
+    @Headers("x-cart-session") sessionKey?: string,
+    @Headers("user-agent")     userAgent?: string,
+  ) {
+    if (!body?.identityToken) {
+      throw new BadRequestException("identityToken is required");
+    }
+    const result = await this.service.verifyAppleCredential({
+      identityToken: body.identityToken,
+      email: body.email ?? null,
+      fullName: body.fullName ?? null,
+      sessionKey,
+    });
     if (result.isNewSignup) {
       const kind = detectPlatform(userAgent);
       try { await this.milestone.maybeAward(result.customerId, kind); } catch { /* non-fatal */ }

@@ -73,7 +73,9 @@ export default function AdminTestimonials() {
     setLoading(true);
     const [data, ps] = await Promise.all([
       safeGet<{ items: Testimonial[] }>(`/admin/testimonials?status=${status}&pageSize=200`, { items: [] }),
-      safeGet<{ items: ProductLite[] } | ProductLite[]>(`/products?pageSize=500`, []),
+      // Admin endpoint — drafts + b2c-disabled rows included so admin
+      // can attach testimonials to any product, even unpublished ones.
+      safeGet<{ items: ProductLite[] } | ProductLite[]>(`/products/admin/list?pageSize=500&page=1`, []),
     ]);
     setItems(data.items ?? []);
     const plist = Array.isArray(ps) ? ps : (ps as any).items ?? [];

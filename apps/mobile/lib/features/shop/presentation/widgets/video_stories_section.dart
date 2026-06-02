@@ -94,16 +94,26 @@ class VideoStoriesSection extends ConsumerWidget {
                 ]),
               ),
               const Gap(10),
+              // SingleChildScrollView + Row instead of ListView.separated to
+              // avoid the nested-viewport + virtualisation pattern that
+              // triggered the _deactivateRecursively assertion at
+              // framework.dart:2134. All thumbs are laid out eagerly.
               SizedBox(
                 height: 110,
-                child: ListView.separated(
+                child: SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   padding: const EdgeInsets.symmetric(horizontal: 16),
-                  separatorBuilder: (_, __) => const Gap(12),
-                  itemCount: stories.length,
-                  itemBuilder: (_, i) => _StoryThumb(
-                    story:    stories[i],
-                    slugMap:  slugMap,
+                  physics: const BouncingScrollPhysics(),
+                  child: Row(
+                    children: [
+                      for (int i = 0; i < stories.length; i++) ...[
+                        if (i > 0) const Gap(12),
+                        _StoryThumb(
+                          story:   stories[i],
+                          slugMap: slugMap,
+                        ),
+                      ],
+                    ],
                   ),
                 ),
               ),

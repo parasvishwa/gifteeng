@@ -25,7 +25,7 @@ import '../../features/account/presentation/screens/account_screen.dart' show pr
 
 const _kBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
-  defaultValue: 'https://new-api.gifteeng.com/api',
+  defaultValue: 'https://www.gifteeng.com/api',
 );
 const _kTokenKey = 'gifteeng.b2c.token';
 
@@ -76,8 +76,12 @@ class RealtimeSync extends WidgetsBindingObserver {
     if (_stopped) return;
     String? token;
     if (ch.requireAuth) {
+      // Must match the secureStorageProvider config in api_client.dart —
+      // mixing `encryptedSharedPreferences: true/false` initializes the
+      // EncryptedSharedPreferences native singleton, which can poison the
+      // cache and break all subsequent storage operations on this device.
       token = await const FlutterSecureStorage(
-        aOptions: AndroidOptions(encryptedSharedPreferences: true),
+        aOptions: AndroidOptions(encryptedSharedPreferences: false),
       ).read(key: _kTokenKey);
       if (token == null || token.isEmpty) {
         // Not logged in → retry the user channel in 30 s. The public

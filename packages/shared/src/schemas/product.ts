@@ -52,6 +52,10 @@ export const ProductListQuerySchema = z
     isCustomizable: z.union([z.boolean(), z.string()]).optional(),
     // Admin-only filter; passed through harmlessly for B2C calls.
     status: z.string().optional(),
+    // Filter for products with ≥60% discount (mrp set + discountPct >= 60)
+    deals: z.coerce.boolean().optional(),
+    // Include FBT products in product detail response
+    fbt: z.coerce.boolean().optional(),
   })
   .passthrough();
 export type ProductListQuery = z.infer<typeof ProductListQuerySchema>;

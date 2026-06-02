@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
-import { Plus, Trash2, Save, X, Upload, Loader2, FolderOpen, Search, Image as ImageIcon, Globe, FileEdit, GripVertical } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Plus, Trash2, Save, X, Upload, Loader2, FolderOpen, Search, Image as ImageIcon, Globe, FileEdit, GripVertical, Pencil } from "lucide-react";
 import { Button, Input, Label, Switch, Badge, Checkbox, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@gifteeng/ui";
 import { toast } from "@gifteeng/ui";
 import { authHeaders, getApiBase, safeGet, safePatch, safePost } from "@/lib/admin-api";
@@ -13,7 +14,9 @@ import { authHeaders, getApiBase, safeGet, safePatch, safePost } from "@/lib/adm
 const GROUP_ORDER = ["By Relation", "By Occasion", "By Theme", "By Profession", "By Use Case", "Other"];
 
 interface Collection { id: string; name: string; description: string; image: string; is_active: boolean; sort_order: number; created_at: string; product_count?: number; }
-interface Product { id: string; name: string; image: string; is_active: boolean; price: number; }
+// `slug` is captured so clicking a product row in the drill-in opens the
+// editor at /super-admin/products/<slug>.
+interface Product { id: string; slug: string; name: string; image: string; is_active: boolean; price: number; }
 
 /** Convert frontend Collection shape → API body (camelCase, as the NestJS controller expects) */
 function toApiPayload(item: Partial<Collection>) {
@@ -27,6 +30,7 @@ function toApiPayload(item: Partial<Collection>) {
 }
 
 export default function AdminCollections() {
+  const router = useRouter();
   const [collections, setCollections] = useState<Collection[]>([]);
   const [productCounts, setProductCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
@@ -45,29 +49,75 @@ export default function AdminCollections() {
   const fetchCollections = async () => {
     // pass ?all=true so admin sees drafts too
     const data = await safeGet<Collection[]>("/collections?all=true", []);
-    setCollections(Array.isArray(data) ? data : []);
+    // Defensive coercion — the API normally returns `name` (mapped from
+    // Prisma `title`), but a row with a null title or a stale cached
+    // response can produce `name: undefined`, which the search filter
+    // crashes on (`c.name.toLowerCase()` on undefined). Coerce every
+    // text field to a string before storing.
+    const list = Array.isArray(data) ? data : [];
+    setCollections(list.map((c) => ({
+      ...c,
+      name:        String((c as any).name ?? (c as any).title ?? ""),
+      description: String((c as any).description ?? ""),
+      image:       String((c as any).image ?? (c as any).heroImage ?? ""),
+      is_active:   Boolean((c as any).is_active ?? (c as any).isPublished ?? false),
+      sort_order:  Number((c as any).sort_order ?? (c as any).sortOrder ?? 0),
+      product_count: Number((c as any).product_count ?? 0),
+    })));
     setProductCounts({});
     setLoading(false);
   };
 
   const fetchCollectionProducts = async (id: string) => {
-    const data = await safeGet<Product[]>(`/collections/${id}/products`, []);
-    setCollectionProducts(Array.isArray(data) ? data : []);
+    // /collections/:id/products returns raw Prisma Product rows (camelCase),
+    // not the snake-cased shape this admin page assumed. Normalise so the
+    // drill-in panel can use `slug` for click-through and `image` for the
+    // thumbnail without crashing on null fields.
+    const data = await safeGet<any[]>(`/collections/${id}/products`, []);
+    const raw = Array.isArray(data) ? data : [];
+    setCollectionProducts(
+      raw.map((p) => ({
+        id:    String(p.id ?? ""),
+        slug:  String(p.slug ?? ""),
+        name:  String(p.title ?? p.name ?? ""),
+        image:
+          (Array.isArray(p.images) && p.images[0]
+            ? typeof p.images[0] === "string"
+              ? p.images[0]
+              : p.images[0]?.url
+            : p.imageUrl ?? p.image ?? "") ?? "",
+        is_active: Boolean(p.b2cEnabled ?? p.isActive ?? p.is_active ?? true),
+        price:     Number(p.basePrice ?? p.price ?? 0),
+      })),
+    );
   };
 
   useEffect(() => {
     fetchCollections();
-    safeGet<{ items?: any[] } | any[]>("/products?pageSize=200", []).then(raw => {
-      const items: any[] = Array.isArray(raw) ? raw : ((raw as any).items ?? []);
-      const list: Product[] = items.map((p: any) => ({
-        id: p.id ?? "",
-        name: (p.name ?? p.title ?? "").toString(),
-        image: p.imageUrl ?? p.images?.[0]?.url ?? p.image ?? "",
-        is_active: p.isActive ?? p.is_active ?? true,
-        price: Number(p.price ?? p.basePrice ?? 0),
-      }));
-      setAllProducts(list);
-    });
+    // Admin product picker — uses /products/admin/list so drafts and
+    // b2c-disabled rows are still selectable. Public /products would
+    // hide anything with b2cEnabled=false.
+    safeGet<{ items?: any[] } | any[]>("/products/admin/list?pageSize=500&page=1", [])
+      .then(raw => {
+        const items: any[] = Array.isArray(raw) ? raw : ((raw as any).items ?? []);
+        const list: Product[] = items.map((p: any) => ({
+          id: p.id ?? "",
+          slug: (p.slug ?? "").toString(),
+          name: (p.title ?? p.name ?? "").toString(),
+          image:
+            // The admin endpoint returns `images` as a JSON value that's
+            // usually `[{ url, alt, order }]`; fall back to plain string or
+            // imageUrl for older rows.
+            (Array.isArray(p.images) && p.images[0]
+              ? typeof p.images[0] === "string"
+                ? p.images[0]
+                : p.images[0].url
+              : p.imageUrl ?? p.image ?? "") ?? "",
+          is_active: p.b2cEnabled ?? p.isActive ?? p.is_active ?? true,
+          price: Number(p.basePrice ?? p.price ?? 0),
+        }));
+        setAllProducts(list);
+      });
   }, []);
 
   const handleImageUpload = async (_file: File) => {
@@ -151,7 +201,9 @@ export default function AdminCollections() {
   const filtered = useMemo(() => {
     if (!search.trim()) return collections;
     const q = search.toLowerCase();
-    return collections.filter(c => c.name.toLowerCase().includes(q));
+    // Defensively guard against rows with no name to avoid a TypeError
+    // on `.toLowerCase()` that crashes the whole page.
+    return collections.filter(c => (c.name ?? "").toLowerCase().includes(q));
   }, [collections, search]);
 
   /** Group collections by their description field (used as group label) */
@@ -337,11 +389,24 @@ export default function AdminCollections() {
                           ? <img src={p.image} className="w-8 h-8 rounded-md object-cover border border-border/30 shrink-0" alt="" />
                           : <div className="w-8 h-8 rounded-md bg-muted flex items-center justify-center shrink-0"><ImageIcon className="w-3.5 h-3.5 text-muted-foreground/30" /></div>
                         }
-                        <span className="text-xs font-medium flex-1 truncate">{p.name}</span>
+                        {/* Click the title → product editor. Removed wrap in
+                            <button> so the trailing icon + remove buttons stay
+                            independently clickable. */}
+                        <button
+                          onClick={() => {
+                            if (p.slug) router.push(`/super-admin/products/${encodeURIComponent(p.slug)}`);
+                          }}
+                          className="flex-1 min-w-0 text-left flex items-center gap-1 hover:text-primary transition-colors"
+                          title="Open product editor"
+                        >
+                          <span className="text-xs font-medium truncate">{p.name}</span>
+                          <Pencil className="w-3 h-3 text-muted-foreground/60 shrink-0 opacity-0 group-hover:opacity-100" />
+                        </button>
                         <span className="text-[10px] text-muted-foreground shrink-0">₹{p.price}</span>
                         <button
                           onClick={() => removeProduct(p.id)}
                           className="p-1 rounded hover:bg-destructive/10 opacity-0 group-hover:opacity-100 transition-opacity"
+                          title="Remove from collection"
                         >
                           <X className="w-3.5 h-3.5 text-destructive" />
                         </button>

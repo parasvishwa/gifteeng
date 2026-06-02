@@ -9,6 +9,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:shimmer/shimmer.dart';
 
 import '../../../../core/api/api_client.dart';
+import '../../../../core/state/app_state.dart';
 import '../../../../core/theme/app_theme.dart';
 
 // ─── Provider ─────────────────────────────────────────────────────────────────
@@ -18,9 +19,10 @@ final _categoriesScreenProvider =
   final dio = ref.watch(dioProvider);
   try {
     final res = await dio.get('/categories', queryParameters: {
-      'pageSize': '200',
-      'withPreviews': 'true',
+      'pageSize':             '200',
+      'withPreviews':        'true',
       'previewsPerCategory': '1',
+      'withProductCounts':   'true',
     });
     final data = res.data;
     if (data is List) return List<Map<String, dynamic>>.from(data);
@@ -34,26 +36,90 @@ final _categoriesScreenProvider =
   }
 });
 
-// ─── Emoji mapping ────────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 String _emojiFor(String name) {
   final n = name.toLowerCase();
-  if (n.contains('birthday') || n.contains('cake')) return '🎂';
-  if (n.contains('anniversary') || n.contains('couple')) return '💍';
-  if (n.contains('flower') || n.contains('bouquet')) return '💐';
-  if (n.contains('personaliz') || n.contains('custom') || n.contains('photo')) return '🎁';
-  if (n.contains('home') || n.contains('decor')) return '🏡';
-  if (n.contains('stationary') || n.contains('stationery') || n.contains('journal')) return '📝';
+  if (n.contains('birthday') || n.contains('cake'))               return '🎂';
+  if (n.contains('anniversary') || n.contains('couple'))          return '💍';
+  if (n.contains('flower') || n.contains('bouquet'))              return '💐';
+  if (n.contains('acrylic') && n.contains('frame'))               return '🖼️';
+  if (n.contains('acrylic') && n.contains('cutout'))              return '✂️';
+  if (n.contains('acrylic') && n.contains('magnet'))              return '🧲';
+  if (n.contains('acrylic') && n.contains('stand'))               return '🗿';
+  if (n.contains('acrylic'))                                       return '🖼️';
+  if (n.contains('personaliz') || n.contains('photo'))            return '🎁';
+  if (n.contains('custom'))                                        return '✏️';
+  if (n.contains('home') || n.contains('decor'))                  return '🏡';
+  if (n.contains('key chain') || n.contains('keychain'))          return '🔑';
+  if (n.contains('key holder') || n.contains('keyholder'))        return '🗝️';
+  if (n.contains('mug') || n.contains('drink') || n.contains('drinkware')) return '☕';
+  if (n.contains('stationery') || n.contains('journal'))          return '📝';
   if (n.contains('kid') || n.contains('child') || n.contains('toy')) return '🧸';
-  if (n.contains('corporate') || n.contains('office') || n.contains('business')) return '💼';
+  if (n.contains('corporate') || n.contains('business') || n.contains('office')) return '💼';
+  if (n.contains('shirt') || n.contains('tee'))                   return '👕';
+  if (n.contains('fashion') || n.contains('cloth') || n.contains('wear')) return '👗';
   if (n.contains('return') || n.contains('wedding') || n.contains('hamper')) return '🎀';
-  if (n.contains('plant') || n.contains('garden') || n.contains('nature')) return '🌿';
+  if (n.contains('plant') || n.contains('garden'))                return '🌿';
   if (n.contains('candle') || n.contains('spa') || n.contains('wellness')) return '🕯️';
-  if (n.contains('tech') || n.contains('gadget') || n.contains('electronic')) return '📱';
-  if (n.contains('book') || n.contains('reading')) return '📚';
+  if (n.contains('tech') || n.contains('gadget'))                 return '📱';
+  if (n.contains('book') || n.contains('reading'))                return '📚';
   if (n.contains('food') || n.contains('chocolate') || n.contains('sweet')) return '🍫';
   if (n.contains('festival') || n.contains('diwali') || n.contains('holi')) return '🪔';
+  if (n.contains('car') || n.contains('auto'))                    return '🚗';
+  if (n.contains('bulk') || n.contains('pack') || n.contains('set')) return '📦';
+  if (n.contains('desk') || n.contains('daily'))                  return '✒️';
   return '🎁';
+}
+
+// Per-category gradient accent colours — used when no banner image is available.
+LinearGradient _gradientFor(String name) {
+  final n = name.toLowerCase();
+  if (n.contains('acrylic'))                   return const LinearGradient(colors: [Color(0xFF7C3AED), Color(0xFF4F46E5)], begin: Alignment.topLeft, end: Alignment.bottomRight);
+  if (n.contains('key'))                       return const LinearGradient(colors: [Color(0xFF1D4ED8), Color(0xFF0F766E)], begin: Alignment.topLeft, end: Alignment.bottomRight);
+  if (n.contains('mug') || n.contains('drink'))return const LinearGradient(colors: [Color(0xFFB45309), Color(0xFF78350F)], begin: Alignment.topLeft, end: Alignment.bottomRight);
+  if (n.contains('home') || n.contains('decor'))return const LinearGradient(colors: [Color(0xFF0F766E), Color(0xFF065F46)], begin: Alignment.topLeft, end: Alignment.bottomRight);
+  if (n.contains('car'))                       return const LinearGradient(colors: [Color(0xFF1E40AF), Color(0xFF1E3A5F)], begin: Alignment.topLeft, end: Alignment.bottomRight);
+  if (n.contains('corp') || n.contains('biz') || n.contains('business')) return const LinearGradient(colors: [Color(0xFF374151), Color(0xFF111827)], begin: Alignment.topLeft, end: Alignment.bottomRight);
+  if (n.contains('kid') || n.contains('child'))return const LinearGradient(colors: [Color(0xFFEC4899), Color(0xFFD97706)], begin: Alignment.topLeft, end: Alignment.bottomRight);
+  if (n.contains('fashion') || n.contains('cloth')) return const LinearGradient(colors: [Color(0xFFBE185D), Color(0xFF9D174D)], begin: Alignment.topLeft, end: Alignment.bottomRight);
+  if (n.contains('desk') || n.contains('office')) return const LinearGradient(colors: [Color(0xFF0369A1), Color(0xFF164E63)], begin: Alignment.topLeft, end: Alignment.bottomRight);
+  if (n.contains('bulk') || n.contains('pack')) return const LinearGradient(colors: [Color(0xFF15803D), Color(0xFF14532D)], begin: Alignment.topLeft, end: Alignment.bottomRight);
+  // Default brand
+  return const LinearGradient(colors: [Color(0xFFEF3752), Color(0xFFB91C1C)], begin: Alignment.topLeft, end: Alignment.bottomRight);
+}
+
+// Returns the best image URL for a category map.
+String? _imageFor(Map<String, dynamic> cat) {
+  for (final key in ['image', 'banner', 'imageUrl', 'bannerUrl']) {
+    final v = cat[key];
+    if (v is String && v.isNotEmpty) return v;
+  }
+  final previews = cat['previews'];
+  if (previews is List && previews.isNotEmpty) {
+    final first = previews.first;
+    if (first is Map) {
+      for (final k in ['url', 'image', 'src']) {
+        final v = first[k];
+        if (v is String && v.isNotEmpty) return v;
+      }
+    }
+  }
+  return null;
+}
+
+// Returns true when a category is known to have at least one product.
+// If the backend does not return a product_count field we default to visible.
+bool _hasProducts(Map<String, dynamic> cat) {
+  final raw = cat['product_count'] ?? cat['productCount'] ?? cat['products_count'];
+  if (raw == null) return true; // unknown → show
+  return (raw as num).toInt() > 0;
+}
+
+int _productCount(Map<String, dynamic> cat) {
+  final raw = cat['product_count'] ?? cat['productCount'] ?? cat['products_count'];
+  if (raw == null) return 0;
+  return (raw as num).toInt();
 }
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
@@ -71,15 +137,15 @@ class CategoriesScreen extends ConsumerWidget {
       body: CustomScrollView(
         physics: const BouncingScrollPhysics(),
         slivers: [
-          // ── App bar ────────────────────────────────────────────────────────
+
+          // ── App bar ──────────────────────────────────────────────────────────
           SliverAppBar(
             pinned: true,
             floating: true,
             backgroundColor: c.bg0,
             surfaceTintColor: Colors.transparent,
             leading: IconButton(
-              icon: Icon(Icons.arrow_back_ios_new_rounded,
-                  size: 18, color: c.text0),
+              icon: Icon(Icons.arrow_back_ios_new_rounded, size: 18, color: c.text0),
               onPressed: () => context.pop(),
             ),
             titleSpacing: 4,
@@ -97,14 +163,13 @@ class CategoriesScreen extends ConsumerWidget {
             ),
           ),
 
-          // ── Content ────────────────────────────────────────────────────────
+          // ── Body ─────────────────────────────────────────────────────────────
           ...async.when(
             loading: () => _buildShimmer(c),
-            error: (_, __) => _buildError(context, c, ref),
-            data: (items) {
-              if (items.isEmpty) return _buildEmpty(context, c);
-              return _buildContent(context, c, items);
-            },
+            error:   (_, __) => _buildError(context, c, ref),
+            data:    (items) => items.isEmpty
+                ? _buildEmpty(context, c)
+                : _buildContent(context, c, items),
           ),
 
           const SliverToBoxAdapter(child: SizedBox(height: 100)),
@@ -113,430 +178,390 @@ class CategoriesScreen extends ConsumerWidget {
     );
   }
 
-  // ── Shimmer ────────────────────────────────────────────────────────────────
+  // ── Shimmer ──────────────────────────────────────────────────────────────────
 
-  List<Widget> _buildShimmer(GColorsPalette c) {
-    return [
-      SliverToBoxAdapter(
-        child: Shimmer.fromColors(
-          baseColor: const Color(0xFF1A1B24),
-          highlightColor: const Color(0xFF252636),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 24, 16, 0),
-            child: GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                crossAxisSpacing: 10,
-                mainAxisSpacing: 10,
-                childAspectRatio: 1,
+  List<Widget> _buildShimmer(GColorsPalette c) => [
+    SliverToBoxAdapter(
+      child: Shimmer.fromColors(
+        baseColor: c.bg2,
+        highlightColor: c.bg1,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                height: 112, width: double.infinity,
+                decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
               ),
-              itemCount: 12,
-              itemBuilder: (_, __) => Container(
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
+              const SizedBox(height: 12),
+              GridView.builder(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 3, crossAxisSpacing: 10,
+                  mainAxisSpacing: 10, childAspectRatio: 0.65,
+                ),
+                itemCount: 6,
+                itemBuilder: (_, __) => Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white, borderRadius: BorderRadius.circular(12)),
                 ),
               ),
-            ),
+            ],
           ),
         ),
       ),
-    ];
-  }
+    ),
+  ];
 
-  // ── Error ──────────────────────────────────────────────────────────────────
+  // ── Error / empty ─────────────────────────────────────────────────────────────
 
-  List<Widget> _buildError(
-      BuildContext context, GColorsPalette c, WidgetRef ref) {
-    return [
-      SliverFillRemaining(
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(32),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Text('😕', style: TextStyle(fontSize: 48)),
-                const Gap(16),
-                Text(
-                  'Could not load categories',
-                  style: GoogleFonts.inter(
-                    fontSize: 15,
-                    color: c.text1,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                const Gap(16),
-                TextButton(
-                  onPressed: () => ref.invalidate(_categoriesScreenProvider),
-                  child: Text(
-                    'Retry',
-                    style: GoogleFonts.inter(color: c.brand),
-                  ),
-                ),
-              ],
+  List<Widget> _buildError(BuildContext context, GColorsPalette c, WidgetRef ref) => [
+    SliverFillRemaining(
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Text('😕', style: TextStyle(fontSize: 48)),
+            const Gap(16),
+            Text('Could not load categories',
+              style: GoogleFonts.inter(fontSize: 15, color: c.text1, fontWeight: FontWeight.w500)),
+            const Gap(16),
+            TextButton(
+              onPressed: () => ref.invalidate(_categoriesScreenProvider),
+              child: Text('Retry', style: GoogleFonts.inter(color: c.brand)),
             ),
-          ),
+          ]),
         ),
       ),
-    ];
-  }
+    ),
+  ];
 
-  // ── Empty ──────────────────────────────────────────────────────────────────
-
-  List<Widget> _buildEmpty(BuildContext context, GColorsPalette c) {
-    return [
-      SliverFillRemaining(
-        child: Center(
-          child: Text(
-            'No categories yet',
-            style: GoogleFonts.inter(
-              fontSize: 15,
-              color: c.text2,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-        ),
+  List<Widget> _buildEmpty(BuildContext context, GColorsPalette c) => [
+    SliverFillRemaining(
+      child: Center(
+        child: Text('No categories yet',
+          style: GoogleFonts.inter(fontSize: 15, color: c.text2, fontWeight: FontWeight.w500)),
       ),
-    ];
-  }
+    ),
+  ];
 
-  // ── Content ────────────────────────────────────────────────────────────────
+  // ── Main content builder ──────────────────────────────────────────────────────
 
   List<Widget> _buildContent(
       BuildContext context,
       GColorsPalette c,
-      List<Map<String, dynamic>> items) {
-    final parents =
-        items.where((x) => x['parent_id'] == null).toList();
-    final children =
-        items.where((x) => x['parent_id'] != null).toList();
+      List<Map<String, dynamic>> items,
+  ) {
+    // ── Compute childAspectRatio so image area is exactly 4:5 ───────────────
+    final screenW = MediaQuery.sizeOf(context).width;
+    const int   cols          = 3;
+    const double hPad         = 16 * 2;   // left + right screen padding
+    const double hSpacing     = 10 * 2;   // 2 gaps for 3 cols
+    final double cardW        = (screenW - hPad - hSpacing) / cols;
+    final double imageH       = cardW * 5 / 4;   // true 4:5 portrait
+    const double nameAreaH    = 34.0;             // fixed label row
+    final double childAR      = cardW / (imageH + nameAreaH);
 
-    final hasHierarchy = children.isNotEmpty;
+    // ── Separate parents from sub-categories ────────────────────────────────
+    final parents = items.where((x) {
+      final pid = x['parent_id'] ?? x['parentId'] ?? x['parent'];
+      return pid == null || pid.toString().isEmpty;
+    }).toList()
+      ..sort((a, b) {
+        final sa = ((a['sort_order'] ?? a['sortOrder'] ?? 0) as num).toInt();
+        final sb = ((b['sort_order'] ?? b['sortOrder'] ?? 0) as num).toInt();
+        return sa.compareTo(sb);
+      });
 
+    final allChildren = items.where((x) {
+      final pid = x['parent_id'] ?? x['parentId'] ?? x['parent'];
+      return pid != null && pid.toString().isNotEmpty;
+    }).toList();
+
+    final hasHierarchy = allChildren.isNotEmpty;
+
+    // ── Flat list (no parent/child structure) ────────────────────────────────
     if (!hasHierarchy) {
-      // Flat 3-col grid — no parent/child structure
+      final visible = items.where(_hasProducts).toList();
+      if (visible.isEmpty) return _buildEmpty(context, c);
       return [
         SliverPadding(
-          padding: const EdgeInsets.fromLTRB(16, 24, 16, 0),
+          padding: const EdgeInsets.fromLTRB(16, 20, 16, 0),
           sliver: SliverGrid(
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 3,
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount:   cols,
               crossAxisSpacing: 10,
-              mainAxisSpacing: 10,
-              childAspectRatio: 1,
+              mainAxisSpacing:  10,
+              childAspectRatio: childAR,
             ),
             delegate: SliverChildBuilderDelegate(
-              (ctx, i) {
-                final cat = items[i];
-                return _CategoryChip(
-                  cat: cat,
-                  animDelay: (i * 45).ms,
-                );
-              },
-              childCount: items.length,
+              (ctx, i) => _SubCategoryCard(cat: visible[i], animDelay: (i * 40).ms),
+              childCount: visible.length,
             ),
           ),
         ),
       ];
     }
 
-    // Hierarchical layout — parent as section header, children in 3-col grid
-    final slivers = <Widget>[];
-    var sectionIndex = 0;
+    // ── Hierarchical layout ──────────────────────────────────────────────────
+    final slivers   = <Widget>[];
+    bool  isFirst   = true;
 
     for (final parent in parents) {
-      final parentId = parent['id'];
-      final subs = children
-          .where((x) => x['parent_id'] == parentId)
-          .toList()
-        ..sort((a, b) =>
-            ((a['sort_order'] as num?)?.toInt() ?? 999)
-                .compareTo((b['sort_order'] as num?)?.toInt() ?? 999));
+      final parentId = (parent['id'] ?? parent['_id'] ?? '').toString();
 
-      // Section header (parent chip, full-width)
-      slivers.add(
-        SliverToBoxAdapter(
+      // Gather visible sub-categories under this parent
+      final subs = allChildren.where((x) {
+        final pid = (x['parent_id'] ?? x['parentId'] ?? x['parent'] ?? '').toString();
+        return pid == parentId;
+      }).where(_hasProducts).toList()
+        ..sort((a, b) {
+          final sa = ((a['sort_order'] ?? a['sortOrder'] ?? 0) as num).toInt();
+          final sb = ((b['sort_order'] ?? b['sortOrder'] ?? 0) as num).toInt();
+          return sa.compareTo(sb);
+        });
+
+      // Decide whether to show this section at all
+      final hasSubs       = subs.isNotEmpty;
+      final parentVisible = hasSubs || _hasProducts(parent);
+      if (!parentVisible) continue;
+
+      // ── Separator between sections ─────────────────────────────────────
+      if (!isFirst) {
+        slivers.add(SliverToBoxAdapter(
           child: Padding(
-            padding: EdgeInsets.fromLTRB(
-                16, sectionIndex == 0 ? 24 : 28, 16, 12),
-            child: _ParentHeader(
-              cat: parent,
-              animDelay: (sectionIndex * 80).ms,
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+            child: Container(height: 1, color: c.border),
           ),
-        ),
-      );
-
-      if (subs.isEmpty) {
-        // No children — render the parent itself as a single chip row
-        slivers.add(
-          SliverPadding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            sliver: SliverGrid(
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                crossAxisSpacing: 10,
-                mainAxisSpacing: 10,
-                childAspectRatio: 1,
-              ),
-              delegate: SliverChildBuilderDelegate(
-                (ctx, i) => _CategoryChip(
-                  cat: parent,
-                  animDelay: (sectionIndex * 80 + 40).ms,
-                ),
-                childCount: 1,
-              ),
-            ),
-          ),
-        );
-      } else {
-        // Subcategory chips in 3-col grid
-        slivers.add(
-          SliverPadding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            sliver: SliverGrid(
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                crossAxisSpacing: 10,
-                mainAxisSpacing: 10,
-                childAspectRatio: 1,
-              ),
-              delegate: SliverChildBuilderDelegate(
-                (ctx, i) {
-                  final sub = subs[i];
-                  return _CategoryChip(
-                    cat: sub,
-                    animDelay: (sectionIndex * 60 + i * 40).ms,
-                  );
-                },
-                childCount: subs.length,
-              ),
-            ),
-          ),
-        );
+        ));
       }
 
-      sectionIndex++;
+      // ── Section header (parent name as title, no horizontal banner) ────
+      // The wide banner was visually heavy and duplicated the info already
+      // shown in the child card below. A simple typographic header reads
+      // cleaner and lets the 4:5 product/category cards do the talking.
+      final parentName = (parent['name'] ?? '').toString();
+      final totalProducts = hasSubs
+          ? subs.fold<int>(0, (s, sub) => s + _productCount(sub))
+          : _productCount(parent);
+
+      slivers.add(SliverToBoxAdapter(
+        child: Padding(
+          padding: EdgeInsets.fromLTRB(16, isFirst ? 20 : 0, 16, 12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: Text(
+                  parentName,
+                  style: GoogleFonts.inter(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: c.text0,
+                    letterSpacing: -0.3,
+                  ),
+                ),
+              ),
+              if (totalProducts > 0)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text(
+                    '$totalProducts ${totalProducts == 1 ? 'product' : 'products'}',
+                    style: GoogleFonts.inter(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                      color: c.text2,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ));
+
+      // ── Sub-category 3-col portrait grid ──────────────────────────────
+      final gridItems = hasSubs ? subs : [parent];
+      slivers.add(SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        sliver: SliverGrid(
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount:   cols,
+            crossAxisSpacing: 10,
+            mainAxisSpacing:  10,
+            childAspectRatio: childAR,
+          ),
+          delegate: SliverChildBuilderDelegate(
+            (ctx, i) => _SubCategoryCard(
+              cat:       gridItems[i],
+              animDelay: (i * 40).ms,
+            ),
+            childCount: gridItems.length,
+          ),
+        ),
+      ));
+
+      isFirst = false;
     }
 
-    // Orphaned children (parent not in parents list) — show flat at the end
-    final knownParentIds = parents.map((p) => p['id']).toSet();
-    final orphans = children
-        .where((x) => !knownParentIds.contains(x['parent_id']))
-        .toList();
+    // ── Orphans: children whose parent is not in the list ─────────────────
+    final knownIds = parents.map((p) => (p['id'] ?? p['_id'] ?? '').toString()).toSet();
+    final orphans  = allChildren.where((x) {
+      final pid = (x['parent_id'] ?? x['parentId'] ?? x['parent'] ?? '').toString();
+      return !knownIds.contains(pid) && _hasProducts(x);
+    }).toList();
 
     if (orphans.isNotEmpty) {
-      slivers.add(
-        SliverToBoxAdapter(
+      if (!isFirst) {
+        slivers.add(SliverToBoxAdapter(
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 28, 16, 12),
-            child: Text(
-              'More',
-              style: GoogleFonts.inter(
-                fontSize: 17,
-                fontWeight: FontWeight.w800,
-                color: GColors.of(context).text0,
-              ),
-            ),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+            child: Container(height: 1, color: c.border),
+          ),
+        ));
+      }
+      slivers.add(SliverToBoxAdapter(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+          child: Text('More',
+            style: GoogleFonts.inter(fontSize: 17, fontWeight: FontWeight.w800, color: c.text0)),
+        ),
+      ));
+      slivers.add(SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        sliver: SliverGrid(
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: cols, crossAxisSpacing: 10,
+            mainAxisSpacing: 10,  childAspectRatio: childAR,
+          ),
+          delegate: SliverChildBuilderDelegate(
+            (ctx, i) => _SubCategoryCard(cat: orphans[i], animDelay: (i * 40).ms),
+            childCount: orphans.length,
           ),
         ),
-      );
-      slivers.add(
-        SliverPadding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          sliver: SliverGrid(
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 3,
-              crossAxisSpacing: 10,
-              mainAxisSpacing: 10,
-              childAspectRatio: 1,
-            ),
-            delegate: SliverChildBuilderDelegate(
-              (ctx, i) => _CategoryChip(
-                cat: orphans[i],
-                animDelay: (sectionIndex * 60 + i * 40).ms,
-              ),
-              childCount: orphans.length,
-            ),
-          ),
-        ),
-      );
+      ));
     }
 
     return slivers;
   }
 }
 
-// ─── Parent section header ────────────────────────────────────────────────────
+// ─── Sub-category card — 4:5 portrait ─────────────────────────────────────────
+// Emil: AnimatedScale(0.96) press feedback — ClipRRect lives inside
+// AnimatedScale so the clip doesn't cut the scale transform.
 
-class _ParentHeader extends StatelessWidget {
+class _SubCategoryCard extends ConsumerStatefulWidget {
   final Map<String, dynamic> cat;
   final Duration animDelay;
 
-  const _ParentHeader({required this.cat, required this.animDelay});
+  const _SubCategoryCard({required this.cat, required this.animDelay});
 
   @override
-  Widget build(BuildContext context) {
-    final c = GColors.of(context);
-    final name = cat['name'] as String? ?? '';
-    final count = (cat['product_count'] as num?)?.toInt() ?? 0;
-
-    return Row(
-      children: [
-        Container(
-          width: 32,
-          height: 32,
-          decoration: BoxDecoration(
-            color: c.brand.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Center(
-            child: Text(
-              _emojiFor(name),
-              style: const TextStyle(fontSize: 16),
-            ),
-          ),
-        ),
-        const Gap(10),
-        Expanded(
-          child: Text(
-            name,
-            style: GoogleFonts.inter(
-              fontSize: 17,
-              fontWeight: FontWeight.w800,
-              color: c.text0,
-            ),
-          ),
-        ),
-        if (count > 0)
-          Text(
-            '$count items',
-            style: GoogleFonts.inter(
-              fontSize: 12,
-              color: c.text2,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-      ],
-    )
-        .animate(delay: animDelay)
-        .fadeIn(duration: 280.ms)
-        .slideX(begin: -0.04, end: 0, duration: 280.ms, curve: Curves.easeOut);
-  }
+  ConsumerState<_SubCategoryCard> createState() => _SubCategoryCardState();
 }
 
-// ─── Category chip ────────────────────────────────────────────────────────────
-
-class _CategoryChip extends StatelessWidget {
-  final Map<String, dynamic> cat;
-  final Duration animDelay;
-
-  const _CategoryChip({required this.cat, required this.animDelay});
+class _SubCategoryCardState extends ConsumerState<_SubCategoryCard> {
+  bool _pressed = false;
 
   @override
   Widget build(BuildContext context) {
-    final c = GColors.of(context);
-    final name = cat['name'] as String? ?? '';
-    final imageUrl = _previewImage(cat);
+    final c     = GColors.of(context);
+    final cat   = widget.cat;
+    final name  = (cat['name'] ?? '').toString();
+    final img   = _imageFor(cat);
+    final emoji = _emojiFor(name);
 
     return GestureDetector(
+      onTapDown:   (_) => setState(() => _pressed = true),
+      onTapUp:     (_) => setState(() => _pressed = false),
+      onTapCancel: () => setState(() => _pressed = false),
       onTap: () {
         HapticFeedback.selectionClick();
-        context.go('/shop?cat=${Uri.encodeComponent(name)}');
+        ref.read(shopCategoryFilterProvider.notifier).state = name;
+        context.pop();
       },
-      child: Container(
-        decoration: BoxDecoration(
-          color: c.bg2,
+      child: AnimatedScale(
+        scale:    _pressed ? 0.96 : 1.0,
+        duration: const Duration(milliseconds: 110),
+        curve:    Curves.easeOut,
+        child: ClipRRect(
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: c.border, width: 1),
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // ── Image or emoji ─────────────────────────────────────────────
-            if (imageUrl != null && imageUrl.isNotEmpty)
-              ClipOval(
-                child: CachedNetworkImage(
-                  imageUrl: imageUrl,
-                  width: 48,
-                  height: 48,
-                  fit: BoxFit.cover,
-                  placeholder: (_, __) => _EmojiCircle(name: name, c: c),
-                  errorWidget: (_, __, ___) => _EmojiCircle(name: name, c: c),
-                ),
-              )
-            else
-              _EmojiCircle(name: name, c: c),
+          child: Container(
+            decoration: BoxDecoration(
+              color:        c.bg1,
+              borderRadius: BorderRadius.circular(12),
+              border:       Border.all(color: c.border, width: 1),
+            ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
 
-            const Gap(8),
-
-            // ── Name ───────────────────────────────────────────────────────
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: Text(
-                name,
-                textAlign: TextAlign.center,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: GoogleFonts.inter(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  color: c.text0,
-                  height: 1.25,
+              // ── 4:5 image area (fills remaining space) ─────────────────
+              Expanded(
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    Container(color: c.bg2),
+                    if (img != null && img.isNotEmpty)
+                      CachedNetworkImage(
+                        imageUrl: img,
+                        fit:      BoxFit.cover,
+                        placeholder: (_, __) =>
+                            _EmojiPlaceholder(emoji: emoji, bg: c.bg2),
+                        errorWidget: (_, __, ___) =>
+                            _EmojiPlaceholder(emoji: emoji, bg: c.bg2),
+                      )
+                    else
+                      _EmojiPlaceholder(emoji: emoji, bg: c.bg2),
+                  ],
                 ),
               ),
-            ),
-          ],
-        ),
-      ),
-    )
-        .animate(delay: animDelay)
+
+              // ── Name label (fixed 34 px) ────────────────────────────────
+              Container(
+                height: 34,
+                color: c.bg1,
+                alignment: Alignment.center,
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Text(
+                  name,
+                  textAlign: TextAlign.center,
+                  maxLines:  2,
+                  overflow:  TextOverflow.ellipsis,
+                  style: GoogleFonts.inter(
+                    fontSize:   10.5,
+                    fontWeight: FontWeight.w700,
+                    color:      c.text0,
+                    height:     1.2,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),      // Container
+      ),        // ClipRRect
+    ),          // AnimatedScale
+    )           // GestureDetector
+        .animate(delay: widget.animDelay)
         .fadeIn(duration: 280.ms)
         .slideY(begin: 0.07, end: 0, duration: 280.ms, curve: Curves.easeOut);
   }
-
-  String? _previewImage(Map<String, dynamic> cat) {
-    // Try `image` field first
-    final img = cat['image'] as String?;
-    if (img != null && img.isNotEmpty) return img;
-
-    // Fall back to previews[0].url
-    final previews = cat['previews'];
-    if (previews is List && previews.isNotEmpty) {
-      final first = previews.first;
-      if (first is Map) return first['url'] as String?;
-    }
-    return null;
-  }
 }
 
-// ─── Emoji circle fallback ────────────────────────────────────────────────────
+// ─── Emoji placeholder for image area ────────────────────────────────────────
 
-class _EmojiCircle extends StatelessWidget {
-  final String name;
-  final GColorsPalette c;
+class _EmojiPlaceholder extends StatelessWidget {
+  final String emoji;
+  final Color  bg;
 
-  const _EmojiCircle({required this.name, required this.c});
+  const _EmojiPlaceholder({required this.emoji, required this.bg});
 
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 48,
-      height: 48,
-      decoration: BoxDecoration(
-        color: c.bg1,
-        shape: BoxShape.circle,
-        border: Border.all(color: c.border),
-      ),
-      child: Center(
-        child: Text(
-          _emojiFor(name),
-          style: const TextStyle(fontSize: 22),
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Container(
+    color: bg,
+    child: Center(
+      child: Text(emoji, style: const TextStyle(fontSize: 32)),
+    ),
+  );
 }

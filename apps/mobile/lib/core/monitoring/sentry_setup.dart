@@ -89,23 +89,49 @@ Future<void> runGifteengApp(FutureOr<void> Function() appRunner) async {
   );
 }
 
+// Explicit list of sensitive substring matches. Maintaining this as a
+// constant beats relying on memory while editing — every key recently
+// flagged in security audits gets a line here. See docs/SECURITY_AUDIT.md
+// L-5: temp-password, access-token, invite-token, GST PII fields, etc.
+const List<String> _kSensitiveKeyFragments = [
+  // Credentials / auth
+  'otp', 'password', 'tempPassword', 'temp_password', 'pin',
+  'token', 'accesstoken', 'access_token', 'refreshtoken', 'refresh_token',
+  'invite_token', 'invitetoken', 'invite_url', 'inviteurl',
+  'apikey', 'api_key', 'authorization', 'authentication',
+  // Payment
+  'razorpay_signature', 'cvv', 'cardnumber', 'card_number', 'card', 'upi',
+  // Secrets / config
+  'secret', 'private', 'session',
+  // PII
+  'aadhaar', 'pan', 'gstin', 'ifsc',
+];
+
+bool _isSensitiveKey(String key) {
+  final lower = key.toLowerCase();
+  for (final frag in _kSensitiveKeyFragments) {
+    if (lower.contains(frag)) return true;
+  }
+  return false;
+}
+
 /// Scrub potential PII from error payloads before shipping to Sentry.
 FutureOr<SentryEvent?> _scrubPii(SentryEvent event, Hint hint) {
   try {
-    // Drop any captured OTP codes — they often land in breadcrumbs when
-    // the user types into the pinput widget.
+    // Drop any captured OTP codes, tokens, payment details, etc. that
+    // may have leaked into breadcrumbs (pinput widgets, dio interceptors,
+    // analytics events).
     final newBreadcrumbs = event.breadcrumbs?.map((b) {
       final data = b.data;
       if (data == null) return b;
       final scrubbed = <String, Object?>{};
       data.forEach((k, v) {
-        final key = k.toLowerCase();
-        if (key.contains('otp') ||
-            key.contains('password') ||
-            key.contains('pin')    ||
-            key.contains('token')  ||
-            key.contains('secret')) {
+        if (_isSensitiveKey(k)) {
           scrubbed[k] = '[redacted]';
+        } else if (v is String && v.length > 200) {
+          // Long strings are typically request bodies or stack traces —
+          // truncate so payment-page HTML/JSON doesn't ride along.
+          scrubbed[k] = '${v.substring(0, 200)}…[truncated]';
         } else {
           scrubbed[k] = v;
         }
@@ -113,11 +139,25 @@ FutureOr<SentryEvent?> _scrubPii(SentryEvent event, Hint hint) {
       return b.copyWith(data: scrubbed);
     }).toList();
 
+    // Strip Authorization headers + bodies from network breadcrumbs.
+    // (Sentry's default Flutter integration captures dio request data.)
+    final cleansed = newBreadcrumbs?.map((b) {
+      if (b.category != 'http' && b.category != 'network') return b;
+      final data = b.data;
+      if (data == null) return b;
+      final stripped = Map<String, Object?>.from(data);
+      stripped.removeWhere((k, _) =>
+          k.toLowerCase() == 'authorization' ||
+          k.toLowerCase() == 'cookie' ||
+          k.toLowerCase() == 'set-cookie');
+      return b.copyWith(data: stripped);
+    }).toList();
+
     // Tag OS for faster filtering in the Sentry UI.
     final tags = Map<String, String>.from(event.tags ?? const {});
     try { tags['os'] = Platform.operatingSystem; } catch (_) {}
 
-    return event.copyWith(breadcrumbs: newBreadcrumbs, tags: tags);
+    return event.copyWith(breadcrumbs: cleansed, tags: tags);
   } catch (_) {
     return event;
   }

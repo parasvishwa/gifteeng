@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Session 158: Flutter Customizer Phase B+C
+# This script documents what the user needs to do locally.
+# (Flutter APK must be built on the developer's machine, not the server.)
+echo "=== Session 158: Flutter customizer upgrade ==="
+echo ""
+echo "Files changed (local only — no server deploy needed for Flutter):"
+echo "  - apps/mobile/pubspec.yaml: added palette_generator, qr_flutter, pretty_qr_code"
+echo "  - apps/mobile/lib/features/shop/presentation/widgets/full_canvas_editor.dart"
+echo ""
+echo "To build and test:"
+echo "  cd apps/mobile"
+echo "  flutter pub get"
+echo "  flutter run   (or flutter build apk --release)"
+echo ""
+echo "What changed:"
+echo "  Phase B:"
+echo "    - Canvas-level pinch-to-zoom (2 fingers) — viewport zoom, design unchanged"
+echo "    - Floating mini-toolbar above selected element (delete/dup/forward/back)"
+echo "    - _buildActionBar already had flutter_animate; toolbar now also animates"
+echo "  Phase C:"
+echo "    - palette_generator: extracts 6-color palette from uploaded image"
+echo "    - Color swatches shown in bottom toolbar — tap to apply to selected element"
+echo "    - pretty_qr_code: QR tool button in bottom toolbar"
+echo "    - QR panel: URL input + color picker + live preview + Add to Design"
+echo "    - Hardware keyboard shortcuts: Del, Ctrl+Z, Ctrl+Shift+Z, Ctrl+D"

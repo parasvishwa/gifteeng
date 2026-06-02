@@ -2277,7 +2277,8 @@ export default function AdminCustomizer() {
 
   const fetchProducts = useCallback(async () => {
     setLoading(true);
-    const data = await apiFetch<{ items?: any[] } | any[]>("/products?pageSize=100");
+    // Admin endpoint so drafts and b2c-disabled rows appear in the picker.
+    const data = await apiFetch<{ items?: any[] } | any[]>("/products/admin/list?pageSize=200&page=1");
     const raw: any[] = data ? (Array.isArray(data) ? data : ((data as any).items ?? [])) : [];
     const list: Product[] = raw
       .filter((p: any) => p.isCustomizable || p.is_customizable || p.metadata?.customizer)

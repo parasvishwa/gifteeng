@@ -50,15 +50,34 @@ class PushService {
     _initTried = true;
     _ref = ref;
 
-    // ── 1. Firebase.initializeApp() — may throw if no config files. We
-    //      swallow the error so the app runs without push.
+    // ── 1. Firebase.initializeApp() — may throw if no config files are
+    //      bundled (google-services.json / GoogleService-Info.plist).
+    //      We try the resource-based init first; if it fails we fall back
+    //      to explicit placeholder options so the native plugin never hard-
+    //      crashes. FCM token registration will still fail (returns 401 from
+    //      the non-existent project), which is caught below — the app runs
+    //      fine without push until real Firebase config files are added.
     try {
       await Firebase.initializeApp();
       _initOk = true;
-    } catch (err, st) {
-      debugPrint('[push] Firebase init failed — push disabled: $err');
-      debugPrint(st.toString());
-      return;
+    } catch (_) {
+      try {
+        await Firebase.initializeApp(
+          options: const FirebaseOptions(
+            apiKey:            'placeholder-replace-with-real-config',
+            appId:             '1:000000000000:android:0000000000000000000000',
+            messagingSenderId: '000000000000',
+            projectId:         'gifteeng-placeholder',
+            storageBucket:     'gifteeng-placeholder.appspot.com',
+          ),
+        );
+        // Initialized with placeholders — tokens won't work but app won't crash.
+        debugPrint('[push] Firebase using placeholder config — push disabled until real google-services.json is added');
+      } catch (err2, st2) {
+        debugPrint('[push] Firebase init failed completely — push disabled: $err2');
+        debugPrint(st2.toString());
+        return;
+      }
     }
 
     // ── 2. Permission — soft ask. The user can toggle later from Settings.

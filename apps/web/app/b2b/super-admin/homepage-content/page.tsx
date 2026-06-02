@@ -152,7 +152,7 @@ const ADD_OPTIONS: AddOption[] = [
 ];
 
 // ─── Migrate pre-Deploy-100 config from legacy keys ──────────────────────
-type LegacyHeroSlide = { id?: string; imageUrl?: string; title?: string; subtitle?: string; ctaText?: string; ctaLink?: string; active?: boolean; order?: number };
+type LegacyHeroSlide = { id?: string; imageUrl?: string; title?: string; subtitle?: string; ctaText?: string; ctaLink?: string; active?: boolean; order?: number; bgColor1?: string; bgColor2?: string; accentColor?: string };
 type LegacyHomeSection = { id?: string; type?: string; title?: string; subtitle?: string; collectionSlug?: string; categoryName?: string; active?: boolean; order?: number };
 
 // The legacy admin stored these keys as JSON-stringified arrays (not parsed

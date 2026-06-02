@@ -6,7 +6,7 @@ import 'package:shimmer/shimmer.dart';
 import '../theme/app_theme.dart';
 
 /// Host portion of API base URL (for resolving relative /api/files/... paths).
-const _kApiHost = 'https://new-api.gifteeng.com';
+const _kApiHost = 'https://www.gifteeng.com';
 
 /// Resolves a product image from either:
 ///   • A Map  { "url": "data:image/png;base64,...", "alt": "" }

@@ -168,7 +168,7 @@ class _TestimonialsSectionState extends ConsumerState<TestimonialsSection> {
       data: (reviews) {
         if (reviews.isEmpty) return const SizedBox.shrink();
         return Padding(
-          padding: const EdgeInsets.fromLTRB(0, 28, 0, 0),
+          padding: EdgeInsets.zero,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -496,7 +496,7 @@ class _SkeletonCarousel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 28, 16, 0),
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
       child: Builder(builder: (context) {
         final c = GColors.of(context);
         return Container(

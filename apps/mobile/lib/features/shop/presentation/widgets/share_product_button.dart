@@ -16,10 +16,10 @@ import '../../../../core/theme/app_theme.dart';
 /// back to the apex once the apex cert is reissued.
 ///
 /// Override at build time with:
-///   flutter run --dart-define=SHARE_BASE_URL=https://new.gifteeng.com
+///   flutter run --dart-define=SHARE_BASE_URL=https://www.gifteeng.com
 const _kShareBaseUrl = String.fromEnvironment(
   'SHARE_BASE_URL',
-  defaultValue: 'https://new.gifteeng.com',
+  defaultValue: 'https://www.gifteeng.com',
 );
 
 /// Circular icon button that opens the native OS share sheet with a

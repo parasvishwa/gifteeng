@@ -27,7 +27,6 @@ export function B2bHeader() {
         <Link href="/" className="flex items-center gap-2">
           <span className="text-lg font-bold text-white">Gifteeng</span>
           <span className="px-1.5 py-0.5 bg-teal-500 text-white text-[9px] font-black rounded tracking-widest">BUSINESS</span>
-          <span className="text-sm text-slate-300">Business portal</span>
         </Link>
         <div className="flex items-center gap-3">
           {user && (

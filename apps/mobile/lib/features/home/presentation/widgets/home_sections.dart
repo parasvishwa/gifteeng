@@ -11,6 +11,7 @@ import '../../../../core/api/api_client.dart';
 import '../../../../core/services/audio_service.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/gift_image.dart';
+import 'home_product_card.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Providers — backend-agnostic: call real endpoints first, fall back to
@@ -79,7 +80,7 @@ class BestSellersSection extends ConsumerWidget {
       data: (products) {
         if (products.isEmpty) return const SizedBox.shrink();
         return Padding(
-          padding: const EdgeInsets.fromLTRB(0, 28, 0, 0),
+          padding: EdgeInsets.zero,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -101,18 +102,16 @@ class BestSellersSection extends ConsumerWidget {
                 ]),
               ),
               SizedBox(
-                // 280 fits image (150) + padded info (~85) + CTA (~36) +
-                // 9 buffer. Earlier 296 left a visible empty band below
-                // the CTA — flagged in user issue #35.
-                height: 280,
+                // Match height with _ProductStrip (unified design)
+                height: 310,
                 child: ListView.separated(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
                   scrollDirection: Axis.horizontal,
                   itemCount: products.length.clamp(0, 8),
-                  separatorBuilder: (_, __) => const Gap(10),
-                  itemBuilder: (_, i) => _RankedCard(
+                  separatorBuilder: (_, __) => const Gap(12),
+                  itemBuilder: (_, i) => HomeProductCard(
                     product: products[i],
-                    rank: i + 1,
+                    rank:    i + 1,
                   ).animate()
                       .fadeIn(delay: (i * 50).ms, duration: 300.ms)
                       .slideX(begin: 0.05, end: 0),
@@ -128,7 +127,7 @@ class BestSellersSection extends ConsumerWidget {
   Widget _buildSkeleton(BuildContext context) {
     final c = GColors.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(0, 28, 0, 0),
+      padding: EdgeInsets.zero,
       child: SizedBox(
         height: 252,
         child: ListView.separated(
@@ -410,7 +409,7 @@ class CorporateGiftsSection extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final async = ref.watch(corporateGiftsProvider);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 28, 16, 0),
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
       child: GestureDetector(
         onTap: () {
           HapticFeedback.selectionClick();

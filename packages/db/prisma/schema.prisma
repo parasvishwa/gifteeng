@@ -44,6 +44,25 @@ enum OrderStatus {
   returned
 }
 
+enum PayoutStatus {
+  pending     // items collected, not yet past eligibility window
+  eligible    // past return + 10-day window — ready for bank transfer
+  processing  // admin initiated the bank transfer
+  paid        // confirmed paid to seller
+  cancelled
+}
+
+enum AssignmentStatus {
+  pending     // assigned to seller, awaiting acceptance
+  accepted    // seller accepted — will fulfil
+  processing  // seller is preparing / in production
+  dispatched  // seller dispatched with courier
+  delivered   // confirmed delivered to buyer
+  returned    // buyer returned item
+  floating    // seller missed deadline — being re-routed
+  cancelled   // all sellers exhausted — permanently stuck
+}
+
 enum OrderPriority {
   low
   normal
@@ -146,10 +165,7 @@ model Company {
   updatedAt      DateTime      @updatedAt
 
   companyUsers   CompanyUser[]
-  companyProducts CompanyProduct[]
-  wallets        Wallet[]
   orders         Order[]
-  campaigns      Campaign[]
   ownedProducts  Product[]     @relation("OwnerCompany")
   priceSlabs     PriceSlab[]
 
@@ -164,6 +180,12 @@ model CompanyUser {
   fullName      String?
   passwordHash  String?
   role          UserRole
+  /// Granular permission strings (e.g. "products.create", "categories.delete").
+  /// Used in addition to `role` so a single user can be granted permissions
+  /// from multiple feature areas without inventing a new role. The
+  /// `super_admin` role bypasses this list (full access). See
+  /// apps/api/src/modules/auth-b2b/permissions.ts for the canonical catalog.
+  permissions   String[]  @default([])
   invitedBy     String?   @db.Uuid
   invitedAt     DateTime?
   activatedAt   DateTime?
@@ -173,13 +195,20 @@ model CompanyUser {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
 
+  /// Single-use invite token — hashed at rest (sha256) so a DB leak doesn't
+  /// expose live invite links. Set on `/b2b/team/invite`, consumed on
+  /// `/auth/b2b/accept-invite` (which sets passwordHash). Null once accepted
+  /// or expired. Replaces the legacy "set password by email" flow which was
+  /// vulnerable to account-takeover by anyone who knew the email.
+  inviteTokenHash      String?
+  inviteTokenExpiresAt DateTime?
+
   company       Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
   ordersPlaced  Order[]   @relation("OrderedByCompanyUser")
-  allocations   CampaignAllocation[]
-  walletsOwned  Wallet[]  @relation("EmployeeWallet")
 
   @@unique([companyId, email])
   @@index([companyId, role])
+  @@index([inviteTokenHash])
   @@map("company_users")
 }
 
@@ -190,6 +219,7 @@ model Customer {
   fullName      String?
   passwordHash  String?
   googleId      String?   @unique @map("google_id")
+  appleId       String?   @unique @map("apple_id")
   avatarUrl     String?   @map("avatar_url")
   emailVerified Boolean   @default(false)
   phoneVerified Boolean   @default(false)
@@ -203,6 +233,11 @@ model Customer {
   isFrozen      Boolean   @default(false) @map("is_frozen")
   frozenAt      DateTime? @map("frozen_at")
   frozenReason  String?   @map("frozen_reason")
+  // Recommendations: cached LLM-derived shopper profile. Shape:
+  // { summary: string, tags: string[], categories: string[], version: 1 }
+  // Refreshed on order placement and on login if older than 7 days.
+  aiProfile           Json?     @map("ai_profile")
+  aiProfileComputedAt DateTime? @map("ai_profile_computed_at")
   metadata      Json?
   // DPDP — set when the customer requests deletion (default now + 30 days).
   // Daily cron anonymizes PII for any row past this timestamp; order rows
@@ -235,6 +270,7 @@ model Customer {
   returnRequests ReturnRequest[]
   consents      ConsentRecord[]
   dataExports   DataExportRequest[]
+  sellerFollows SellerFollower[]
 
   @@index([dataDeletionScheduledFor])
   @@map("customers")
@@ -264,6 +300,7 @@ model Product {
   title            String
   description      String?
   category         String?
+  brandName        String?  // marketplace brand label (seller's brand or house brand)
   basePrice        Decimal  @db.Decimal(12, 2)
   currency         String   @default("INR")
   sku              String?
@@ -275,12 +312,16 @@ model Product {
   b2bEnabled       Boolean  @default(false)
   ownerCompanyId   String?  @db.Uuid // null = global
   metadata         Json?
+  mrp          Decimal?  @db.Decimal(12, 2)  // market retail price; null = no discount advertised
+  discountPct  Int?      @map("discount_pct") // ((mrp-basePrice)/mrp)*100, stored for fast filtering
+  // Self-relation: ops curates 2–3 FBT products per product in admin
+  frequentlyBoughtWith Product[] @relation("ProductFBT")
+  frequentlyBoughtBy   Product[] @relation("ProductFBT")
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
   ownerCompany     Company? @relation("OwnerCompany", fields: [ownerCompanyId], references: [id])
   variantOptions   ProductVariantOption[]
-  companyProducts  CompanyProduct[]
   priceSlabs       PriceSlab[]
   orderItems       OrderItem[]
   cartItems        CartItem[]
@@ -289,11 +330,12 @@ model Product {
   externalReviews  ExternalReview[]
   testimonials     Testimonial[]
   collectionLinks  ProductCollection[]
-  catalogItems     CatalogItem[]
   dropConfigs      ProductDropConfig[] // Deploy 120 — product-drop campaigns
+  sellerOffers     SellerProduct[]     // marketplace — sellers offering this product
 
   @@index([category, b2cEnabled])
   @@index([ownerCompanyId])
+  @@index([discountPct, b2cEnabled])
   @@map("products")
 }
 
@@ -313,21 +355,6 @@ model ProductVariantOption {
 
   @@index([productId, name])
   @@map("product_variant_options")
-}
-
-model CompanyProduct {
-  id            String   @id @default(uuid()) @db.Uuid
-  companyId     String   @db.Uuid
-  productId     String   @db.Uuid
-  overridePrice Decimal? @db.Decimal(12, 2)
-  isVisible     Boolean  @default(true)
-  createdAt     DateTime @default(now())
-
-  company       Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  product       Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
-
-  @@unique([companyId, productId])
-  @@map("company_products")
 }
 
 model PriceSlab {
@@ -372,50 +399,8 @@ model ProductCollection {
   @@map("product_collections")
 }
 
-model Catalog {
-  id          String   @id @default(uuid()) @db.Uuid
-  slug        String   @unique
-  title       String
-  description String?
-  heroImage   String?
-  isPublished Boolean  @default(true)
-  createdAt   DateTime @default(now())
-
-  items       CatalogItem[]
-  enquiries   CatalogEnquiry[]
-
-  @@map("catalogs")
-}
-
-model CatalogItem {
-  id         String  @id @default(uuid()) @db.Uuid
-  catalogId  String  @db.Uuid
-  productId  String  @db.Uuid
-  sortOrder  Int     @default(0)
-
-  catalog    Catalog @relation(fields: [catalogId], references: [id], onDelete: Cascade)
-  product    Product @relation(fields: [productId], references: [id], onDelete: Cascade)
-
-  @@unique([catalogId, productId])
-  @@map("catalog_items")
-}
-
-model CatalogEnquiry {
-  id            String   @id @default(uuid()) @db.Uuid
-  catalogId     String?  @db.Uuid
-  contactName   String
-  contactEmail  String
-  contactPhone  String?
-  companyName   String?
-  message       String?
-  requestedItems Json?   // [{productId, qty, notes}]
-  status        String   @default("new") // new | contacted | quoted | closed
-  createdAt     DateTime @default(now())
-
-  catalog       Catalog? @relation(fields: [catalogId], references: [id])
-
-  @@map("catalog_enquiries")
-}
+// Catalog / CatalogItem / CatalogEnquiry models removed — the corporate
+// B2B catalog offering was discontinued.
 
 // ============================================================
 // Commerce (orders, cart, etc.)
@@ -443,8 +428,6 @@ model Order {
   paymentStatus   PaymentStatus @default(pending)
   razorpayOrderId String?
   razorpayPaymentId String?
-  walletTxnId     String?       @db.Uuid
-  campaignAllocationId String?  @db.Uuid
 
   shippingAddress Json?
   billingAddress  Json?
@@ -473,20 +456,25 @@ model Order {
 }
 
 model OrderItem {
-  id             String   @id @default(uuid()) @db.Uuid
-  orderId        String   @db.Uuid
-  productId      String   @db.Uuid
-  qty            Int
-  unitPrice      Decimal  @db.Decimal(12, 2)
-  totalPrice     Decimal  @db.Decimal(12, 2)
-  variantOptions Json?    // snapshot of chosen variants
-  customization  Json?    // fabric.js canvas JSON + assets
-  snapshot       Json?    // product snapshot at time of order
+  id              String   @id @default(uuid()) @db.Uuid
+  orderId         String   @db.Uuid
+  productId       String   @db.Uuid
+  sellerProductId String?  @db.Uuid // marketplace — the seller offer this line was bought from
+  qty             Int
+  unitPrice       Decimal  @db.Decimal(12, 2)
+  totalPrice      Decimal  @db.Decimal(12, 2)
+  variantOptions  Json?    // snapshot of chosen variants
+  customization   Json?    // fabric.js canvas JSON + assets
+  snapshot        Json?    // product snapshot at time of order
 
-  order          Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product        Product  @relation(fields: [productId], references: [id])
+  order           Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product         Product        @relation(fields: [productId], references: [id])
+  sellerProduct   SellerProduct? @relation(fields: [sellerProductId], references: [id])
+  returnRequests  ReturnRequest[]
+  assignments     OrderItemAssignment[]
 
   @@index([orderId])
+  @@index([sellerProductId])
   @@map("order_items")
 }
 
@@ -524,16 +512,18 @@ model Cart {
 }
 
 model CartItem {
-  id             String   @id @default(uuid()) @db.Uuid
-  cartId         String   @db.Uuid
-  productId      String   @db.Uuid
-  qty            Int
-  variantOptions Json?
-  customization  Json?
-  addedAt        DateTime @default(now())
+  id              String   @id @default(uuid()) @db.Uuid
+  cartId          String   @db.Uuid
+  productId       String   @db.Uuid
+  sellerProductId String?  @db.Uuid // marketplace — chosen seller offer
+  qty             Int
+  variantOptions  Json?
+  customization   Json?
+  addedAt         DateTime @default(now())
 
-  cart           Cart     @relation(fields: [cartId], references: [id], onDelete: Cascade)
-  product        Product  @relation(fields: [productId], references: [id])
+  cart            Cart           @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product         Product        @relation(fields: [productId], references: [id])
+  sellerProduct   SellerProduct? @relation(fields: [sellerProductId], references: [id])
 
   @@index([cartId])
   @@map("cart_items")
@@ -634,83 +624,8 @@ model CustomerPhoto {
   @@map("customer_photos")
 }
 
-// ============================================================
-// B2B wallet / campaigns
-// ============================================================
-
-model Wallet {
-  id            String           @id @default(uuid()) @db.Uuid
-  ownerType     WalletOwnerType
-  companyId     String?          @db.Uuid
-  companyUserId String?          @db.Uuid
-  balance       Decimal          @default(0) @db.Decimal(14, 2)
-  lockedBalance Decimal          @default(0) @db.Decimal(14, 2)
-  currency      String           @default("INR")
-  createdAt     DateTime         @default(now())
-  updatedAt     DateTime         @updatedAt
-
-  company       Company?         @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  companyUser   CompanyUser?     @relation("EmployeeWallet", fields: [companyUserId], references: [id], onDelete: Cascade)
-  transactions  WalletTransaction[]
-
-  @@unique([ownerType, companyId, companyUserId])
-  @@map("wallets")
-}
-
-model WalletTransaction {
-  id        String        @id @default(uuid()) @db.Uuid
-  walletId  String        @db.Uuid
-  type      WalletTxnType
-  amount    Decimal       @db.Decimal(14, 2)
-  reference String?       // orderId, campaignId, razorpayPaymentId
-  notes     String?
-  createdAt DateTime      @default(now())
-
-  wallet    Wallet        @relation(fields: [walletId], references: [id], onDelete: Cascade)
-
-  @@index([walletId, createdAt])
-  @@map("wallet_transactions")
-}
-
-model Campaign {
-  id          String         @id @default(uuid()) @db.Uuid
-  companyId   String         @db.Uuid
-  type        CampaignType
-  status      CampaignStatus @default(draft)
-  title       String
-  description String?
-  budgetTotal Decimal        @db.Decimal(14, 2)
-  perEmployeeAmount Decimal? @db.Decimal(12, 2)
-  startsAt    DateTime?
-  endsAt      DateTime?
-  metadata    Json?
-  createdAt   DateTime       @default(now())
-  updatedAt   DateTime       @updatedAt
-
-  company     Company        @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  allocations CampaignAllocation[]
-
-  @@index([companyId, status])
-  @@map("campaigns")
-}
-
-model CampaignAllocation {
-  id             String           @id @default(uuid()) @db.Uuid
-  campaignId     String           @db.Uuid
-  companyUserId  String           @db.Uuid
-  amount         Decimal          @db.Decimal(12, 2)
-  redeemedAmount Decimal          @default(0) @db.Decimal(12, 2)
-  status         AllocationStatus @default(pending)
-  expiresAt      DateTime?
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
-
-  campaign       Campaign         @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  companyUser    CompanyUser      @relation(fields: [companyUserId], references: [id], onDelete: Cascade)
-
-  @@unique([campaignId, companyUserId])
-  @@map("campaign_allocations")
-}
+// B2B wallet & campaign models (Wallet, WalletTransaction, Campaign,
+// CampaignAllocation) removed — the corporate offering was discontinued.
 
 // ============================================================
 // Platform / misc
@@ -1590,17 +1505,34 @@ model InactivityRewardSent {
 //     drop in without a new model.
 // ─────────────────────────────────────────────────────────────────────────────
 model HeroBanner {
-  id         String    @id @default(uuid()) @db.Uuid
-  imageUrl   String                                   // 3:1 image (1500×500 recommended)
-  linkUrl    String    @default("/shop")              // tap target — internal route or absolute URL
-  placement  String    @default("home")               // "home" | "shop_top" | "cart_top" …
-  altText    String?                                  // a11y description
-  startsAt   DateTime?                                // optional time-window start
-  endsAt     DateTime?                                // optional time-window end
-  sortOrder  Int       @default(0)                    // manual drag-to-reorder weight
-  isActive   Boolean   @default(true)
-  createdAt  DateTime  @default(now())                @map("created_at")
-  updatedAt  DateTime  @updatedAt                     @map("updated_at")
+  id            String    @id @default(uuid()) @db.Uuid
+  imageUrl      String                                       // desktop/web image (3:1, 1500×500 recommended)
+  mobileImageUrl String?                                     @map("mobile_image_url") // phone/Flutter image (9:20, 750×1334 recommended) — falls back to imageUrl if null
+  linkUrl       String    @default("/shop")                  // tap target — internal route or absolute URL
+  placement     String    @default("home")                   // "home" | "shop_top" | "cart_top" …
+  altText       String?                                      // a11y description
+  startsAt      DateTime?                                    // optional time-window start
+  endsAt        DateTime?                                    // optional time-window end
+  sortOrder     Int       @default(0)                        // manual drag-to-reorder weight
+  isActive      Boolean   @default(true)
+  // Per-banner text overlay (left half of the hero composition). When all
+  // of these are null the slide falls back to legacy image-only rendering
+  // — i.e. the image fills the whole slide and the text column collapses.
+  tagline       String?                                      @map("tagline")
+  heading       String?                                      @map("heading")
+  headingAccent String?                                      @map("heading_accent")
+  subtitle      String?                                      @map("subtitle")
+  button1Text   String?                                      @map("button1_text")
+  button1Link   String?                                      @map("button1_link")
+  button2Text   String?                                      @map("button2_text")
+  button2Link   String?                                      @map("button2_link")
+  // Per-banner color overrides — all nullable, fall back to brand defaults.
+  textBgColor   String?                                      @map("text_bg_color")
+  textColor     String?                                      @map("text_color")
+  accentColor   String?                                      @map("accent_color")
+  buttonColor   String?                                      @map("button_color")
+  createdAt     DateTime  @default(now())                    @map("created_at")
+  updatedAt     DateTime  @updatedAt                         @map("updated_at")
 
   @@index([placement, isActive, sortOrder])
   @@map("hero_banners")
@@ -1740,10 +1672,18 @@ model ReturnRequest {
 
   order           Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
   customer        Customer     @relation(fields: [customerId], references: [id])
+  // orderItem is optional — `null` represents a whole-order RMA. ON DELETE
+  // SET NULL because we never want to lose a customer's return-request
+  // audit trail just because admin later edited the line away. The
+  // app-level guard in OrdersService.editOrder refuses to remove a
+  // line with active RMAs, so the NULL fallback only fires for
+  // out-of-band deletions.
+  orderItem       OrderItem?   @relation(fields: [orderItemId], references: [id], onDelete: SetNull)
 
   @@index([orderId])
   @@index([customerId, status])
   @@index([status, createdAt])
+  @@index([orderItemId])
   @@map("return_requests")
 }
 
@@ -1820,4 +1760,260 @@ model DataExportRequest {
   @@index([customerId, createdAt])
   @@index([status, expiresAt])
   @@map("data_export_requests")
+}
+
+// ============================================================
+// Marketplace — Sellers / Vendors
+// ============================================================
+
+enum SellerType {
+  individual
+  business
+}
+
+enum SellerStatus {
+  pending     // submitted onboarding, awaiting super-admin review
+  approved    // verified — may list products
+  rejected
+  suspended
+}
+
+enum SellerMode {
+  vendor_only  // provides manufacturing / printing to Gifteeng only
+  full_seller  // also lists & sells their own products
+}
+
+model Seller {
+  id                String       @id @default(uuid()) @db.Uuid
+
+  // ── Login identity (phone-OTP) ──────────────────────────────
+  phone             String       @unique
+  email             String?
+
+  // ── Business identity ──────────────────────────────────────
+  type              SellerType
+  mode              SellerMode   @default(full_seller)
+  brandName         String       // shown to buyers on the marketplace
+  legalName         String       // proprietor name OR registered company name
+
+  // ── Tax / compliance ───────────────────────────────────────
+  gstNumber         String?
+  panNumber         String?
+
+  // ── Contact person (proprietor / director) ─────────────────
+  contactName       String
+  contactPhone      String?
+  contactEmail      String?
+
+  // ── Location — pincode drives proximity-based seller scoring ─
+  addressLine       String?
+  city              String?
+  state             String?
+  pincode           String
+
+  // ── Payout details (seller enters these themselves) ─────────
+  bankAccountName   String?
+  bankAccountNumber String?
+  bankIfsc          String?
+
+  // ── KYC documents — [{ type, url }] uploaded during onboarding
+  kycDocs           Json?
+
+  // ── Marketplace state ──────────────────────────────────────
+  status            SellerStatus @default(pending)
+  rejectedReason    String?
+  chargesCourier    Boolean      @default(false)
+  dispatchDays      Int          @default(2)
+  ratingAvg         Float        @default(0)
+  ratingCount       Int          @default(0)
+
+  // ── Store page identity ────────────────────────────────────
+  slug              String?      @unique
+  followerCount     Int          @default(0)
+  hasTrademark      Boolean?
+  trademarkNumber   String?
+
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  approvedAt        DateTime?
+
+  products          SellerProduct[]
+  assignments       OrderItemAssignment[]
+  payouts           SellerPayout[]
+  followers         SellerFollower[]
+
+  @@index([status])
+  @@index([pincode])
+  @@map("sellers")
+}
+
+// Single-use phone OTP for seller onboarding + login. The code is hashed
+// at rest; the plaintext is only ever sent over SMS.
+model SellerOtp {
+  id         String    @id @default(uuid()) @db.Uuid
+  phone      String
+  codeHash   String
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([phone])
+  @@map("seller_otps")
+}
+
+model SellerFollower {
+  id         String   @id @default(uuid()) @db.Uuid
+  sellerId   String   @db.Uuid
+  customerId String   @db.Uuid
+  createdAt  DateTime @default(now())
+
+  seller     Seller   @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  customer   Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+
+  @@unique([sellerId, customerId])
+  @@index([customerId])
+  @@map("seller_followers")
+}
+
+enum SellerProductStatus {
+  pending    // seller listed it, awaiting super-admin verification
+  approved   // verified — visible on the marketplace
+  rejected
+}
+
+// A seller's offer to sell a product. Either the seller created the
+// product themselves (isOwnListing = true) or they requested to also
+// sell an existing catalogue product (isOwnListing = false). Every
+// offer is verified by a super-admin before it goes live.
+model SellerProduct {
+  id             String              @id @default(uuid()) @db.Uuid
+  sellerId       String              @db.Uuid
+  productId      String              @db.Uuid
+
+  isOwnListing   Boolean             @default(false)
+
+  price          Decimal             @db.Decimal(12, 2)  // seller's selling price
+  stock          Int                 @default(0)
+
+  status         SellerProductStatus @default(pending)
+  rejectedReason String?
+
+  // Product rating specific to THIS seller's offer (separate from the
+  // seller's overall rating, which lives on Seller.ratingAvg).
+  ratingAvg      Float               @default(0)
+  ratingCount    Int                 @default(0)
+  viewCount      Int                 @default(0)
+
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  approvedAt     DateTime?
+
+  seller         Seller              @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  product        Product             @relation(fields: [productId], references: [id], onDelete: Cascade)
+  cartItems      CartItem[]
+  orderItems     OrderItem[]
+  assignments    OrderItemAssignment[]
+
+  @@unique([sellerId, productId])
+  @@index([status])
+  @@index([productId, status])
+  @@index([sellerId, status])
+  @@map("seller_products")
+}
+
+// Each marketplace order item gets an assignment record tracking which seller
+// is fulfilling it. When a seller misses their deadline the record flips to
+// "floating" and a new assignment is created for the next-best seller.
+// The chain of attempts for one item is queryable via orderItemId.
+model OrderItemAssignment {
+  id              String           @id @default(uuid()) @db.Uuid
+  orderItemId     String           @db.Uuid
+  sellerId        String           @db.Uuid
+  sellerProductId String?          @db.Uuid
+
+  status          AssignmentStatus @default(pending)
+  attemptNumber   Int              @default(1)
+
+  assignedAt          DateTime         @default(now())
+  deadlineAt          DateTime
+  acceptedAt          DateTime?
+  scheduledDispatchAt DateTime?
+  dispatchedAt        DateTime?
+  deliveredAt         DateTime?
+  returnedAt          DateTime?
+
+  // Courier details — seller fills these in when dispatching
+  useOwnCourier   Boolean          @default(false)
+  courier         String?
+  awb             String?
+  trackingUrl     String?
+  notes           String?
+
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  orderItem       OrderItem        @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  seller          Seller           @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  sellerProduct   SellerProduct?   @relation(fields: [sellerProductId], references: [id], onDelete: SetNull)
+  payoutItem      SellerPayoutItem?
+
+  @@index([orderItemId])
+  @@index([sellerId])
+  @@index([status])
+  @@index([deadlineAt])
+  @@map("order_item_assignments")
+}
+
+// ── Payouts ───────────────────────────────────────────────────────────────────
+
+// Admin-editable platform-wide settings stored as key-value JSON.
+// Currently used for: marketplace_commission_rate (default 0.10 = 10%).
+model PlatformSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt @default(now())
+
+  @@map("platform_settings")
+}
+
+// One payout record per seller per batch. Created by the payout cron once all
+// included items have passed the return window + 10-day hold.
+model SellerPayout {
+  id               String      @id @default(uuid()) @db.Uuid
+  sellerId         String      @db.Uuid
+
+  grossAmount      Decimal     @db.Decimal(12, 2)
+  commissionRate   Decimal     @db.Decimal(5, 4)   // snapshot of the rate at payout time
+  commissionAmount Decimal     @db.Decimal(12, 2)
+  netAmount        Decimal     @db.Decimal(12, 2)
+
+  status           PayoutStatus @default(eligible)
+  paymentRef       String?      // bank transfer / UTR number
+  notes            String?
+  paidAt           DateTime?
+
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  seller  Seller           @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  items   SellerPayoutItem[]
+
+  @@index([sellerId])
+  @@index([status])
+  @@map("seller_payouts")
+}
+
+// One line per fulfilled order item included in a payout batch.
+model SellerPayoutItem {
+  id           String   @id @default(uuid()) @db.Uuid
+  payoutId     String   @db.Uuid
+  assignmentId String   @db.Uuid @unique
+
+  grossAmount  Decimal  @db.Decimal(12, 2)
+
+  payout     SellerPayout        @relation(fields: [payoutId], references: [id], onDelete: Cascade)
+  assignment OrderItemAssignment @relation(fields: [assignmentId], references: [id])
+
+  @@index([payoutId])
+  @@map("seller_payout_items")
 }

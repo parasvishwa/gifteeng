@@ -2,8 +2,155 @@
 
 import * as React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Camera, Pencil, Upload, X, Check } from "lucide-react";
+import { Camera, Pencil, Upload, X, Check, Move } from "lucide-react";
 import type { CanvasEditorChange, CanvasEditorProduct } from "./canvas-editor";
+
+// ─────────────────────────────────────────────────────────────────────────
+// DraggablePreview
+// ─────────────────────────────────────────────────────────────────────────
+// Square preview that lets the customer drag the photo around to reposition
+// it inside its zone frame. The offset is reported in zone-frame
+// percentages (-50..50 each axis) so it's resolution-independent — a
+// 25% right pan moves the photo a quarter of the zone width regardless
+// of whether the bake target is 200 px or 2000 px.
+//
+// Works for both image-zones and masks because both render the same
+// "scale + rotate + translate(x%, y%)" CSS transform style. Pointer
+// events cover mouse, touch, pen — single API, no fork.
+//
+// Layout: capped at min(100%, 40vh) so the preview never pushes the
+// Apply / Remove / Change buttons off-screen on short laptops.
+function DraggablePreview(props: {
+  src: string;
+  scale: number;
+  rotate: number;
+  offset: { x: number; y: number };
+  onOffsetChange: (next: { x: number; y: number }) => void;
+}) {
+  const { src, scale, rotate, offset, onOffsetChange } = props;
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  // Track the active drag — null when not dragging; remember the
+  // pointer-down origin AND the offset at drag-start so we apply a
+  // delta from that anchor (not from the current `offset` prop, which
+  // would feedback-loop as the parent re-renders mid-drag).
+  const dragRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startOffsetX: number;
+    startOffsetY: number;
+    rect: DOMRect;
+  } | null>(null);
+  const [dragging, setDragging] = useState(false);
+  // Hide the "Drag to reposition" hint badge after the customer has
+  // actually dragged once. Persists for the lifetime of the modal so
+  // a second drag doesn't re-show it.
+  const [hasDragged, setHasDragged] = useState(false);
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    dragRef.current = {
+      pointerId: e.pointerId,
+      startClientX: e.clientX,
+      startClientY: e.clientY,
+      startOffsetX: offset.x,
+      startOffsetY: offset.y,
+      rect,
+    };
+    containerRef.current.setPointerCapture(e.pointerId);
+    setDragging(true);
+  };
+
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const d = dragRef.current;
+    if (!d || d.pointerId !== e.pointerId) return;
+    const dxPx = e.clientX - d.startClientX;
+    const dyPx = e.clientY - d.startClientY;
+    // Once the user has actually moved past a few pixels, count the
+    // gesture as a drag and dismiss the hint.
+    if (!hasDragged && (Math.abs(dxPx) > 4 || Math.abs(dyPx) > 4)) {
+      setHasDragged(true);
+    }
+    // Convert pixel delta → percentage of the preview box
+    const dxPct = (dxPx / d.rect.width)  * 100;
+    const dyPct = (dyPx / d.rect.height) * 100;
+    // Clamp to ±50% — the photo can be pulled fully off centre but no
+    // further (otherwise it slides entirely out of the frame).
+    const nextX = Math.max(-50, Math.min(50, d.startOffsetX + dxPct));
+    const nextY = Math.max(-50, Math.min(50, d.startOffsetY + dyPct));
+    onOffsetChange({ x: nextX, y: nextY });
+  };
+
+  const endDrag = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!dragRef.current || dragRef.current.pointerId !== e.pointerId) return;
+    try { containerRef.current?.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    dragRef.current = null;
+    setDragging(false);
+  };
+
+  const recenter = () => onOffsetChange({ x: 0, y: 0 });
+  const isOffCentre = offset.x !== 0 || offset.y !== 0;
+
+  return (
+    <div className="mb-4">
+      <div
+        ref={containerRef}
+        className={`relative w-full max-h-[40vh] aspect-square rounded-xl overflow-hidden bg-gray-100 mx-auto select-none ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
+        style={{ maxWidth: "min(100%, 40vh)", touchAction: "none" }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={src}
+          alt="preview"
+          draggable={false}
+          className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+          style={{
+            transform: `translate(${offset.x}%, ${offset.y}%) scale(${scale}) rotate(${rotate}deg)`,
+            transformOrigin: "center",
+            // Smooth motion on slider changes; instant feedback while dragging.
+            transition: dragging ? "none" : "transform 200ms",
+          }}
+        />
+        {/* Drag-hint badge — ALWAYS visible until the customer has
+            actually dragged. Uses a soft pulse so it draws the eye
+            without being annoying. Disappears the instant they drag
+            past a 4-px threshold so it doesn't get in the way after
+            the gesture is "discovered". */}
+        {!hasDragged && !dragging && (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <div className="rounded-full bg-black/65 backdrop-blur px-3 py-1.5 text-[11px] font-semibold text-white flex items-center gap-1.5 animate-pulse">
+              <Move className="w-3.5 h-3.5" /> Drag photo to reposition
+            </div>
+          </div>
+        )}
+      </div>
+      {/* Helper line — explains the three controls so customers know
+          this isn't just a static preview. */}
+      <p className="mt-2 text-center text-[11px] text-gray-500">
+        Drag the photo above to reposition · Use the sliders below to zoom &amp; rotate
+      </p>
+      {isOffCentre && (
+        <div className="mt-1.5 flex items-center justify-between text-[10px] text-gray-500">
+          <span>
+            Offset: {Math.round(offset.x)}% × {Math.round(offset.y)}%
+          </span>
+          <button
+            type="button"
+            onClick={recenter}
+            className="font-bold text-[#EF3752] hover:underline"
+          >
+            Recenter
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -276,7 +423,24 @@ async function uploadToServer(file: File, uploadUrl: string): Promise<string> {
   const form = new FormData();
   form.append("file", file);
   form.append("ownerType", "customization");
-  const res = await fetch(uploadUrl, { method: "POST", body: form });
+
+  // Auth — see canvas-editor.tsx uploadToServer for full reasoning.
+  // Same fix needed here because session79 locked /api/files/upload.
+  const headers: Record<string, string> = {};
+  if (typeof window !== "undefined") {
+    try {
+      const b2c = window.localStorage.getItem("gifteeng.b2c.token");
+      if (b2c) headers.Authorization = `Bearer ${b2c}`;
+      else {
+        const b2b = window.localStorage.getItem("gifteeng.b2b.token");
+        if (b2b) headers.Authorization = `Bearer ${b2b}`;
+      }
+      const cartSession = window.localStorage.getItem("gifteeng.cart.session");
+      if (cartSession) headers["X-Cart-Session"] = cartSession;
+    } catch { /* private mode / SSR */ }
+  }
+
+  const res = await fetch(uploadUrl, { method: "POST", body: form, headers });
   if (!res.ok) throw new Error(`Upload failed (${res.status})`);
   const data = await res.json() as { url?: string };
   if (!data.url) throw new Error("No URL in upload response");
@@ -287,19 +451,23 @@ function parseInitialFills(initial?: string | null): {
   fills: SimpleCustomizerFills;
   imageScales: Record<string, number>;
   imageRotations: Record<string, number>;
+  imageOffsets: Record<string, { x: number; y: number }>;
   maskScales: Record<string, number>;
   maskRotations: Record<string, number>;
+  maskOffsets: Record<string, { x: number; y: number }>;
 } {
   const empty = {
     fills: { images: {}, texts: {}, textStyles: {}, maskImages: {}, textPositions: {} },
-    imageScales: {}, imageRotations: {},
-    maskScales: {}, maskRotations: {},
+    imageScales: {}, imageRotations: {}, imageOffsets: {},
+    maskScales: {}, maskRotations: {}, maskOffsets: {},
   };
   if (!initial) return empty;
   try {
     const parsed = JSON.parse(initial) as SimpleCustomizerPayload & {
       maskScales?: Record<string, number>;
       maskRotations?: Record<string, number>;
+      imageOffsets?: Record<string, { x: number; y: number }>;
+      maskOffsets?: Record<string, { x: number; y: number }>;
     };
     if (parsed && parsed.__simpleZones && parsed.fills) {
       return {
@@ -312,8 +480,10 @@ function parseInitialFills(initial?: string | null): {
         },
         imageScales:    { ...(parsed.imageScales    ?? {}) },
         imageRotations: { ...(parsed.imageRotations ?? {}) },
+        imageOffsets:   { ...(parsed.imageOffsets   ?? {}) },
         maskScales:     { ...(parsed.maskScales     ?? {}) },
         maskRotations:  { ...(parsed.maskRotations  ?? {}) },
+        maskOffsets:    { ...(parsed.maskOffsets    ?? {}) },
       };
     }
   } catch { /* ignore */ }
@@ -331,6 +501,8 @@ async function composePreview(
   masks?: SimpleMaskSlot[],
   maskScales?: Record<string, number>,
   maskRotations?: Record<string, number>,
+  imageOffsets?: Record<string, { x: number; y: number }>,
+  maskOffsets?: Record<string, { x: number; y: number }>,
 ): Promise<string> {
   try {
     const base = await loadImage(baseImage);
@@ -354,18 +526,22 @@ async function composePreview(
           const my = (m.pos.y / 100) * H;
           const mw = (m.pos.w / 100) * W;
           const mh = (m.pos.h / 100) * H;
-          // Apply customer's zoom + rotate (CSS transform on screen → bake here).
+          // Apply customer's zoom + rotate + offset (CSS transform on
+          // screen → bake here).
           const mScale = (maskScales ?? {})[m.id] ?? 1;
           const mRotateDeg = (maskRotations ?? {})[m.id] ?? 0;
+          const mOffset = (maskOffsets ?? {})[m.id] ?? { x: 0, y: 0 };
+          const mox = (mOffset.x / 100) * mw;
+          const moy = (mOffset.y / 100) * mh;
           const drawPhoto = () => {
             const ar = photo.naturalWidth / photo.naturalHeight;
             const boxAr = mw / mh;
             let sx = 0, sy = 0, sw = photo.naturalWidth, sh = photo.naturalHeight;
             if (ar > boxAr) { sw = photo.naturalHeight * boxAr; sx = (photo.naturalWidth - sw) / 2; }
             else            { sh = photo.naturalWidth / boxAr; sy = (photo.naturalHeight - sh) / 2; }
-            if (mScale !== 1 || mRotateDeg !== 0) {
+            if (mScale !== 1 || mRotateDeg !== 0 || mox !== 0 || moy !== 0) {
               ctx.save();
-              ctx.translate(mx + mw / 2, my + mh / 2);
+              ctx.translate(mx + mw / 2 + mox, my + mh / 2 + moy);
               if (mRotateDeg !== 0) ctx.rotate((mRotateDeg * Math.PI) / 180);
               ctx.scale(mScale, mScale);
               ctx.drawImage(photo, sx, sy, sw, sh, -mw / 2, -mh / 2, mw, mh);
@@ -389,9 +565,13 @@ async function composePreview(
                 let sx = 0, sy = 0, sw = photo.naturalWidth, sh = photo.naturalHeight;
                 if (ar > boxAr) { sw = photo.naturalHeight * boxAr; sx = (photo.naturalWidth - sw) / 2; }
                 else            { sh = photo.naturalWidth / boxAr; sy = (photo.naturalHeight - sh) / 2; }
-                if (mScale !== 1 || mRotateDeg !== 0) {
+                // mox/moy are in zone-pixel coords; the offscreen canvas
+                // is scaled to the zone's pixel dimensions, so translate
+                // by the same number of pixels to apply the same offset
+                // before silhouette compositing.
+                if (mScale !== 1 || mRotateDeg !== 0 || mox !== 0 || moy !== 0) {
                   octx.save();
-                  octx.translate(off.width / 2, off.height / 2);
+                  octx.translate(off.width / 2 + mox, off.height / 2 + moy);
                   if (mRotateDeg !== 0) octx.rotate((mRotateDeg * Math.PI) / 180);
                   octx.scale(mScale, mScale);
                   octx.drawImage(photo, sx, sy, sw, sh, -off.width / 2, -off.height / 2, off.width, off.height);
@@ -457,9 +637,16 @@ async function composePreview(
         }
         const scale = (imageScales ?? {})[z.id] ?? 1;
         const rotateDeg = (imageRotations ?? {})[z.id] ?? 0;
-        if (scale !== 1 || rotateDeg !== 0) {
+        const offset = (imageOffsets ?? {})[z.id] ?? { x: 0, y: 0 };
+        const ox = (offset.x / 100) * zw;
+        const oy = (offset.y / 100) * zh;
+        if (scale !== 1 || rotateDeg !== 0 || ox !== 0 || oy !== 0) {
           ctx.save();
-          ctx.translate(zx + zw / 2, zy + zh / 2);
+          // Translate to zone centre + customer's offset BEFORE rotating /
+          // scaling, so offset is in zone-frame coordinates (a 25% right
+          // pan moves the photo a quarter of the zone width regardless
+          // of any subsequent rotation).
+          ctx.translate(zx + zw / 2 + ox, zy + zh / 2 + oy);
           if (rotateDeg !== 0) ctx.rotate((rotateDeg * Math.PI) / 180);
           ctx.scale(scale, scale);
           ctx.drawImage(zImg, sx, sy, sw, sh, -zw / 2, -zh / 2, zw, zh);
@@ -552,13 +739,21 @@ export function SimpleZoneCustomizer({
   const [fills, setFills] = useState<SimpleCustomizerFills>(() => parseInitialFills(initialCanvasJSON).fills);
   const [imageScales, setImageScales] = useState<Record<string, number>>(() => parseInitialFills(initialCanvasJSON).imageScales);
   const [imageRotations, setImageRotations] = useState<Record<string, number>>(() => parseInitialFills(initialCanvasJSON).imageRotations);
+  // Per-zone X/Y offset as a percentage of the zone box (-50..50, where
+  // 0 is centred). Lets the customer drag-to-reposition the photo
+  // inside its frame so e.g. a face that ended up off-centre after the
+  // object-fit:cover crop can be slid back into view. Stored alongside
+  // scale + rotation; applied as `translate(x%, y%)` in the on-screen
+  // transform AND baked into the final composite via ctx.translate.
+  const [imageOffsets, setImageOffsets] = useState<Record<string, { x: number; y: number }>>(() => parseInitialFills(initialCanvasJSON).imageOffsets);
   // Per-mask zoom + rotation. Same UX as image-zone editor — customer taps a
   // filled mask → bottom sheet with zoom slider + rotate knob → Apply persists.
   const [maskScales, setMaskScales] = useState<Record<string, number>>(() => parseInitialFills(initialCanvasJSON).maskScales);
   const [maskRotations, setMaskRotations] = useState<Record<string, number>>(() => parseInitialFills(initialCanvasJSON).maskRotations);
-  const [editingMaskScale, setEditingMaskScale] = useState<{ mask: SimpleMaskSlot; scale: number; rotate: number } | null>(null);
+  const [maskOffsets, setMaskOffsets] = useState<Record<string, { x: number; y: number }>>(() => parseInitialFills(initialCanvasJSON).maskOffsets);
+  const [editingMaskScale, setEditingMaskScale] = useState<{ mask: SimpleMaskSlot; scale: number; rotate: number; offset: { x: number; y: number } } | null>(null);
   const [editingTextZone, setEditingTextZone] = useState<SimpleZone | null>(null);
-  const [editingImageZoneScale, setEditingImageZoneScale] = useState<{ zone: SimpleZone; scale: number; rotate: number } | null>(null);
+  const [editingImageZoneScale, setEditingImageZoneScale] = useState<{ zone: SimpleZone; scale: number; rotate: number; offset: { x: number; y: number } } | null>(null);
   const [textDraft, setTextDraft] = useState("");
   const [draftFont, setDraftFont]         = useState<string | undefined>(undefined);
   const [draftColor, setDraftColor]       = useState<string | undefined>(undefined);
@@ -591,6 +786,8 @@ export function SimpleZoneCustomizer({
     const payload: SimpleCustomizerPayload & {
       maskScales?: Record<string, number>;
       maskRotations?: Record<string, number>;
+      imageOffsets?: Record<string, { x: number; y: number }>;
+      maskOffsets?:  Record<string, { x: number; y: number }>;
     } = {
       __simpleZones: true,
       baseImage,
@@ -600,10 +797,12 @@ export function SimpleZoneCustomizer({
       fills,
       imageScales,
       imageRotations,
+      imageOffsets,
       maskScales,
       maskRotations,
+      maskOffsets,
     };
-    const previewDataUrl = await composePreview(baseImage, imageZones, textZones, fills, imageScales, imageRotations, masksList, maskScales, maskRotations);
+    const previewDataUrl = await composePreview(baseImage, imageZones, textZones, fills, imageScales, imageRotations, masksList, maskScales, maskRotations, imageOffsets, maskOffsets);
     const imagesUsed = [
       ...Object.values(fills.images),
       ...Object.values(fills.maskImages ?? {}),
@@ -614,7 +813,7 @@ export function SimpleZoneCustomizer({
       fontsUsed: [],
       imagesUsed,
     });
-  }, [onChange, baseImage, imageZones, textZones, masksList, fills, imageScales, imageRotations, maskScales, maskRotations]);
+  }, [onChange, baseImage, imageZones, textZones, masksList, fills, imageScales, imageRotations, imageOffsets, maskScales, maskRotations, maskOffsets]);
 
   useEffect(() => {
     const h = setTimeout(() => { void emitChange(); }, 150);
@@ -638,7 +837,12 @@ export function SimpleZoneCustomizer({
     const zone = imageZones.find((z) => z.id === zoneId);
     // If already filled → open the image edit sheet (scale / rotate / replace / remove)
     if (fills.images[zoneId] && zone) {
-      setEditingImageZoneScale({ zone, scale: imageScales[zoneId] ?? 1, rotate: imageRotations[zoneId] ?? 0 });
+      setEditingImageZoneScale({
+        zone,
+        scale:  imageScales[zoneId]    ?? 1,
+        rotate: imageRotations[zoneId] ?? 0,
+        offset: imageOffsets[zoneId]   ?? { x: 0, y: 0 },
+      });
       return;
     }
     if (zone && (zone.allowedIcons?.length ?? 0) > 0) {
@@ -696,6 +900,7 @@ export function SimpleZoneCustomizer({
         mask:   m,
         scale:  maskScales[maskId]    ?? 1,
         rotate: maskRotations[maskId] ?? 0,
+        offset: maskOffsets[maskId]   ?? { x: 0, y: 0 },
       });
       return;
     }
@@ -709,9 +914,10 @@ export function SimpleZoneCustomizer({
       delete copy[maskId];
       return { ...prev, maskImages: copy };
     });
-    // Reset zoom + rotation along with the photo so the next upload starts clean.
+    // Reset zoom + rotation + offset along with the photo so the next upload starts clean.
     setMaskScales(prev => { const c = { ...prev }; delete c[maskId]; return c; });
     setMaskRotations(prev => { const c = { ...prev }; delete c[maskId]; return c; });
+    setMaskOffsets(prev => { const c = { ...prev }; delete c[maskId]; return c; });
   };
 
   const clearImageZone = (zoneId: string) => {
@@ -725,6 +931,8 @@ export function SimpleZoneCustomizer({
       delete copy[zoneId];
       return copy;
     });
+    setImageRotations(prev => { const c = { ...prev }; delete c[zoneId]; return c; });
+    setImageOffsets(prev   => { const c = { ...prev }; delete c[zoneId]; return c; });
   };
 
   // ── Text zone handlers ──────────────────────────────────────────────────
@@ -867,7 +1075,7 @@ export function SimpleZoneCustomizer({
                         className="absolute inset-0 w-full h-full object-cover"
                         draggable={false}
                         style={{
-                          transform: `scale(${maskScales[m.id] ?? 1}) rotate(${maskRotations[m.id] ?? 0}deg)`,
+                          transform: `translate(${(maskOffsets[m.id]?.x ?? 0)}%, ${(maskOffsets[m.id]?.y ?? 0)}%) scale(${maskScales[m.id] ?? 1}) rotate(${maskRotations[m.id] ?? 0}deg)`,
                           transformOrigin: "center",
                         }}
                       />
@@ -895,7 +1103,7 @@ export function SimpleZoneCustomizer({
                         className="absolute inset-0 w-full h-full object-cover"
                         draggable={false}
                         style={{
-                          transform: `scale(${maskScales[m.id] ?? 1}) rotate(${maskRotations[m.id] ?? 0}deg)`,
+                          transform: `translate(${(maskOffsets[m.id]?.x ?? 0)}%, ${(maskOffsets[m.id]?.y ?? 0)}%) scale(${maskScales[m.id] ?? 1}) rotate(${maskRotations[m.id] ?? 0}deg)`,
                           transformOrigin: "center",
                         }}
                       />
@@ -939,7 +1147,7 @@ export function SimpleZoneCustomizer({
                           className="absolute inset-0 w-full h-full object-cover"
                           draggable={false}
                           style={{
-                            transform: `scale(${maskScales[m.id] ?? 1}) rotate(${maskRotations[m.id] ?? 0}deg)`,
+                            transform: `translate(${(maskOffsets[m.id]?.x ?? 0)}%, ${(maskOffsets[m.id]?.y ?? 0)}%) scale(${maskScales[m.id] ?? 1}) rotate(${maskRotations[m.id] ?? 0}deg)`,
                             transformOrigin: "center",
                           }}
                         />
@@ -1084,7 +1292,7 @@ export function SimpleZoneCustomizer({
                         src={filled}
                         alt={z.label}
                         className="absolute inset-0 w-full h-full object-cover"
-                        style={{ transform: `scale(${imageScales[z.id] ?? 1}) rotate(${imageRotations[z.id] ?? 0}deg)`, transformOrigin: "center" }}
+                        style={{ transform: `translate(${(imageOffsets[z.id]?.x ?? 0)}%, ${(imageOffsets[z.id]?.y ?? 0)}%) scale(${imageScales[z.id] ?? 1}) rotate(${imageRotations[z.id] ?? 0}deg)`, transformOrigin: "center" }}
                       />
                       <span className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
                         <span className="opacity-0 group-hover:opacity-100 transition-opacity bg-white/90 rounded-full px-2 py-1 text-[10px] font-bold text-gray-800 flex items-center gap-1">
@@ -1108,7 +1316,7 @@ export function SimpleZoneCustomizer({
                       style={{ position: "relative", width: "100%", height: "100%", borderRadius: outlineRadius, ...maskStyle }}
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={filled} alt={z.label} className="absolute inset-0 w-full h-full object-cover" style={{ transform: `scale(${imageScales[z.id] ?? 1}) rotate(${imageRotations[z.id] ?? 0}deg)`, transformOrigin: "center" }} />
+                      <img src={filled} alt={z.label} className="absolute inset-0 w-full h-full object-cover" style={{ transform: `translate(${(imageOffsets[z.id]?.x ?? 0)}%, ${(imageOffsets[z.id]?.y ?? 0)}%) scale(${imageScales[z.id] ?? 1}) rotate(${imageRotations[z.id] ?? 0}deg)`, transformOrigin: "center" }} />
                       <span className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
                         <span className="opacity-0 group-hover:opacity-100 transition-opacity bg-white/90 rounded-full px-2 py-1 text-[10px] font-bold text-gray-800 flex items-center gap-1">
                           <Camera className="w-3 h-3" /> Edit
@@ -1658,34 +1866,36 @@ export function SimpleZoneCustomizer({
           / maskRotations and re-bakes the preview composite. */}
       {editingMaskScale && (
         <div
-          className="fixed inset-0 z-[110] flex flex-col justify-end"
+          className="fixed inset-0 z-[110] flex flex-col justify-center items-center px-4"
           onClick={() => setEditingMaskScale(null)}
         >
           <div className="absolute inset-0 bg-black/50 pointer-events-none" />
           <div
-            className="relative w-full bg-white rounded-t-2xl shadow-2xl"
+            className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex justify-center pt-3 pb-1">
-              <div className="w-10 h-1.5 rounded-full bg-gray-200" />
+            <div className="flex items-center justify-between px-5 pt-4 pb-1 sticky top-0 bg-white">
+              <p className="text-xs uppercase tracking-widest text-gray-400 font-bold">Edit photo</p>
+              <button
+                type="button"
+                onClick={() => setEditingMaskScale(null)}
+                aria-label="Close"
+                className="w-7 h-7 rounded-full hover:bg-gray-100 text-gray-500 flex items-center justify-center transition-colors"
+              ><X className="w-4 h-4" /></button>
             </div>
             <div className="px-5 pb-6 pt-1">
-              <p className="text-xs uppercase tracking-widest text-gray-400 font-bold">Edit photo</p>
-              <p className="text-sm font-bold text-gray-900 mt-0.5 mb-3">{editingMaskScale.mask.label || "Mask"}</p>
+              <p className="text-sm font-bold text-gray-900 mb-3">{editingMaskScale.mask.label || "Mask"}</p>
 
-              {/* Live preview */}
-              <div className="w-full aspect-square rounded-xl overflow-hidden bg-gray-100 mb-4 flex items-center justify-center">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={(fills.maskImages ?? {})[editingMaskScale.mask.id] ?? ""}
-                  alt="preview"
-                  className="w-full h-full object-cover transition-transform duration-200"
-                  style={{
-                    transform: `scale(${editingMaskScale.scale}) rotate(${editingMaskScale.rotate}deg)`,
-                    transformOrigin: "center",
-                  }}
-                />
-              </div>
+              {/* Live preview — drag to reposition; works on touch + mouse. */}
+              <DraggablePreview
+                src={(fills.maskImages ?? {})[editingMaskScale.mask.id] ?? ""}
+                scale={editingMaskScale.scale}
+                rotate={editingMaskScale.rotate}
+                offset={editingMaskScale.offset}
+                onOffsetChange={(next) =>
+                  setEditingMaskScale((prev) => prev ? { ...prev, offset: next } : null)
+                }
+              />
 
               {/* Zoom slider */}
               <div className="mb-4">
@@ -1778,6 +1988,7 @@ export function SimpleZoneCustomizer({
                   onClick={() => {
                     setMaskScales(prev    => ({ ...prev, [editingMaskScale.mask.id]: editingMaskScale.scale  }));
                     setMaskRotations(prev => ({ ...prev, [editingMaskScale.mask.id]: editingMaskScale.rotate }));
+                    setMaskOffsets(prev   => ({ ...prev, [editingMaskScale.mask.id]: editingMaskScale.offset }));
                     setEditingMaskScale(null);
                   }}
                   className="flex-1 h-10 rounded-xl text-sm font-bold text-white transition-opacity hover:opacity-90"
@@ -1791,37 +2002,50 @@ export function SimpleZoneCustomizer({
         </div>
       )}
 
-      {/* Image scale / edit bottom sheet */}
+      {/* Image scale / edit bottom sheet
+       *
+       * Sized for mobile by default but capped at max-w-md on desktop so
+       * the `aspect-square` preview doesn't blow up to viewport-width
+       * (1900+ px on a desktop browser pushes every control off-screen).
+       * `max-h-[90vh] overflow-y-auto` on the inner stack guarantees the
+       * Apply / Remove / Change buttons are always reachable without
+       * scrolling the whole page. */}
       {editingImageZoneScale && (
         <div
-          className="fixed inset-0 z-[110] flex flex-col justify-end"
+          className="fixed inset-0 z-[110] flex flex-col justify-center items-center px-4"
           onClick={() => setEditingImageZoneScale(null)}
         >
           <div className="absolute inset-0 bg-black/50 pointer-events-none" />
           <div
-            className="relative w-full bg-white rounded-t-2xl shadow-2xl"
+            className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl max-h-[90vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex justify-center pt-3 pb-1">
-              <div className="w-10 h-1.5 rounded-full bg-gray-200" />
+            {/* Top bar — close X (centered modal, no bottom-sheet drag handle). */}
+            <div className="flex items-center justify-between px-5 pt-4 pb-1 sticky top-0 bg-white">
+              <p className="text-xs uppercase tracking-widest text-gray-400 font-bold">Edit image</p>
+              <button
+                type="button"
+                onClick={() => setEditingImageZoneScale(null)}
+                aria-label="Close"
+                className="w-7 h-7 rounded-full hover:bg-gray-100 text-gray-500 flex items-center justify-center transition-colors"
+              ><X className="w-4 h-4" /></button>
             </div>
             <div className="px-5 pb-6 pt-1">
-              <p className="text-xs uppercase tracking-widest text-gray-400 font-bold">Edit image</p>
-              <p className="text-sm font-bold text-gray-900 mt-0.5 mb-3">{editingImageZoneScale.zone.label}</p>
+              <p className="text-sm font-bold text-gray-900 mb-3">{editingImageZoneScale.zone.label}</p>
 
-              {/* Live preview */}
-              <div className="w-full aspect-square rounded-xl overflow-hidden bg-gray-100 mb-4 flex items-center justify-center">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={fills.images[editingImageZoneScale.zone.id] ?? ""}
-                  alt="preview"
-                  className="w-full h-full object-cover transition-transform duration-200"
-                  style={{
-                    transform: `scale(${editingImageZoneScale.scale}) rotate(${editingImageZoneScale.rotate}deg)`,
-                    transformOrigin: "center",
-                  }}
-                />
-              </div>
+              {/* Live preview — drag the photo to reposition it inside
+                  the frame; the offset is in zone-frame percentages so a
+                  drag of half the preview width = 50% offset baked at
+                  any zone size. The same gesture works on touch + mouse. */}
+              <DraggablePreview
+                src={fills.images[editingImageZoneScale.zone.id] ?? ""}
+                scale={editingImageZoneScale.scale}
+                rotate={editingImageZoneScale.rotate}
+                offset={editingImageZoneScale.offset}
+                onOffsetChange={(next) =>
+                  setEditingImageZoneScale((prev) => prev ? { ...prev, offset: next } : null)
+                }
+              />
 
               {/* Zoom slider */}
               <div className="mb-4">
@@ -1913,8 +2137,9 @@ export function SimpleZoneCustomizer({
                 <button
                   type="button"
                   onClick={() => {
-                    setImageScales(prev => ({ ...prev, [editingImageZoneScale.zone.id]: editingImageZoneScale.scale }));
+                    setImageScales(prev    => ({ ...prev, [editingImageZoneScale.zone.id]: editingImageZoneScale.scale  }));
                     setImageRotations(prev => ({ ...prev, [editingImageZoneScale.zone.id]: editingImageZoneScale.rotate }));
+                    setImageOffsets(prev   => ({ ...prev, [editingImageZoneScale.zone.id]: editingImageZoneScale.offset }));
                     setEditingImageZoneScale(null);
                   }}
                   className="flex-1 h-10 rounded-xl text-sm font-bold text-white transition-opacity hover:opacity-90"

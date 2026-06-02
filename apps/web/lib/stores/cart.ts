@@ -21,6 +21,7 @@ export type CartLine = {
    */
   _pending?: string;
   productId: string;
+  sellerProductId?: string; // marketplace — chosen seller offer (omitted for house products)
   slug?: string; // product slug — needed for "Edit design" link back to /customize/<slug>
   title: string;
   priceLabel: string;
@@ -59,6 +60,7 @@ type ServerProduct = {
 type ServerCartItem = {
   id: string;
   productId: string;
+  sellerProductId?: string | null;
   qty: number;
   variantOptions?: Record<string, string> | null;
   customization?: unknown;
@@ -165,6 +167,7 @@ function stripPreviewForServer(c: unknown): unknown {
 function toCartItemInput(line: CartLine): CartItemInput {
   return {
     productId: line.productId,
+    ...(line.sellerProductId ? { sellerProductId: line.sellerProductId } : {}),
     qty: line.quantity,
     variantOptions: line.variantOptions,
     customization: stripPreviewForServer(line.customization),
@@ -401,6 +404,7 @@ export const useCartStore = create<CartState>()(
             return {
               id: it.id,
               productId: it.productId,
+              ...(it.sellerProductId ? { sellerProductId: it.sellerProductId } : {}),
               slug: prev?.slug ?? it.product?.slug,
               title: prev?.title || (it.product?.title ?? ""),
               priceLabel: pickServerPriceLabel(it, currency, prev?.priceLabel ?? ""),

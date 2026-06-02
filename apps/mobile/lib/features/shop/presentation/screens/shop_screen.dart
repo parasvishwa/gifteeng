@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -6,6 +7,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:gap/gap.dart';
 import 'package:go_router/go_router.dart';
+import 'package:shimmer/shimmer.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:dio/dio.dart' show FormData, MultipartFile;
 
 import '../../../../core/widgets/gift_image.dart';
 import '../../../../core/api/api_client.dart';
@@ -15,6 +19,7 @@ import '../../../../core/services/audio_service.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../widgets/product_badges.dart';
 import '../widgets/video_stories_section.dart';
+import '../../../home/presentation/widgets/home_product_card.dart';
 
 // ─── Design tokens — mapped to design system ──────────────────────────────────
 // NOTE: _k* are now set per-build via GColors.of(context) so the app
@@ -71,13 +76,17 @@ final _categoriesProvider =
 final _productsProvider = FutureProvider.autoDispose
     .family<List<Map<String, dynamic>>, String>((ref, key) async {
   final parts      = key.split('|');
+  // Key layout: catId | occasion | collection | customisable | minPrice |
+  // maxPrice | search | sort. Order must stay in sync with the `_key`
+  // getter in _ShopScreenState below.
   final catId      = parts.isNotEmpty ? parts[0] : 'all';
   final occ        = parts.length > 1 ? parts[1] : 'all';
-  final customisable = parts.length > 2 ? parts[2] : '';
-  final minPrice   = parts.length > 3 ? parts[3] : '';
-  final maxPrice   = parts.length > 4 ? parts[4] : '';
-  final search     = parts.length > 5 ? parts[5] : '';
-  final sort       = parts.length > 6 ? parts[6] : '';
+  final collection = parts.length > 2 ? parts[2] : '';
+  final customisable = parts.length > 3 ? parts[3] : '';
+  final minPrice   = parts.length > 4 ? parts[4] : '';
+  final maxPrice   = parts.length > 5 ? parts[5] : '';
+  final search     = parts.length > 6 ? parts[6] : '';
+  final sort       = parts.length > 7 ? parts[7] : '';
   // Default backend pageSize is 24. The Shop screen is intended to be a
   // browse-everything view, so we explicitly request 100 (the upper bound
   // enforced by the schema) to avoid silent truncation when the catalog
@@ -86,6 +95,7 @@ final _productsProvider = FutureProvider.autoDispose
   final qp = <String, String>{'pageSize': '100'};
   if (catId != 'all')          qp['category']       = catId;
   if (occ   != 'all')          qp['tag']            = 'occasion:$occ';
+  if (collection.isNotEmpty)   qp['collection']     = collection;
   if (customisable == 'true')  qp['isCustomizable'] = 'true';
   if (minPrice.isNotEmpty)     qp['minPrice']       = minPrice;
   if (maxPrice.isNotEmpty)     qp['maxPrice']       = maxPrice;
@@ -262,10 +272,15 @@ _BadgeCfg? _badgeCfg(String? tag) {
 class ShopScreen extends ConsumerStatefulWidget {
   final String? initialCategoryId;
   final String? initialOccasion;
+  // Collection slug — when set, the grid filters to products in that
+  // Collection (joined through ProductCollection). Lets the home page /
+  // admin collections drill-in deep-link straight to "Shop > Collection X".
+  final String? initialCollection;
   const ShopScreen({
     super.key,
     this.initialCategoryId,
     this.initialOccasion,
+    this.initialCollection,
   });
 
   @override
@@ -275,6 +290,7 @@ class ShopScreen extends ConsumerStatefulWidget {
 class _ShopScreenState extends ConsumerState<ShopScreen> {
   String _activeCatId    = 'all';
   String _activeOccasion = 'all';
+  String _activeCollection = ''; // collection slug; '' = no filter
   bool   _customisable   = false;
   String _priceMin       = '';
   String _priceMax       = '';
@@ -285,7 +301,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
   Timer? _debounce;
 
   String get _key =>
-      '$_activeCatId|$_activeOccasion|${_customisable ? 'true' : ''}|$_priceMin|$_priceMax|$_search|$_sort';
+      '$_activeCatId|$_activeOccasion|$_activeCollection|${_customisable ? 'true' : ''}|$_priceMin|$_priceMax|$_search|$_sort';
 
   @override
   void initState() {
@@ -296,9 +312,13 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
     if (widget.initialOccasion != null && widget.initialOccasion!.isNotEmpty) {
       _activeOccasion = widget.initialOccasion!;
     }
+    if (widget.initialCollection != null && widget.initialCollection!.isNotEmpty) {
+      _activeCollection = widget.initialCollection!;
+    }
     Analytics.screen('/shop', props: {
       if (widget.initialCategoryId != null) 'category': widget.initialCategoryId!,
       if (widget.initialOccasion != null) 'occasion': widget.initialOccasion!,
+      if (widget.initialCollection != null) 'collection': widget.initialCollection!,
     });
   }
 
@@ -311,14 +331,16 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
     if (fromCat != 'all' && fromCat != _activeCatId) {
       _activeCatId = fromCat;
       changed = true;
-      Future.microtask(
-          () => ref.read(shopCategoryFilterProvider.notifier).state = 'all');
+      Future.microtask(() {
+        if (mounted) ref.read(shopCategoryFilterProvider.notifier).state = 'all';
+      });
     }
     if (fromOcc != 'all' && fromOcc != _activeOccasion) {
       _activeOccasion = fromOcc;
       changed = true;
-      Future.microtask(
-          () => ref.read(shopOccasionFilterProvider.notifier).state = 'all');
+      Future.microtask(() {
+        if (mounted) ref.read(shopOccasionFilterProvider.notifier).state = 'all';
+      });
     }
     if (changed) setState(() {});
   }
@@ -357,6 +379,15 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
         }),
       ),
     );
+  }
+
+  // Cancel the debounce timer on deactivation (tab switch) — not just dispose.
+  // context.mounted returns true even for _ElementLifecycle.inactive, so the
+  // debounce callback would crash when fired on an inactive element.
+  @override
+  void deactivate() {
+    _debounce?.cancel();
+    super.deactivate();
   }
 
   @override
@@ -431,10 +462,10 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
               search:            _search,
               hintNames:         hintNames,
               onSearchChanged: (v) {
-                setState(() => _liveQuery = v); // instant → suggestions
+                setState(() => _liveQuery = v);
                 _debounce?.cancel();
                 _debounce = Timer(const Duration(milliseconds: 380), () {
-                  if (mounted) setState(() => _search = v); // debounced → grid
+                  if (mounted && context.mounted) setState(() => _search = v);
                 });
               },
               onSearchClear: () {
@@ -521,57 +552,92 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
                   ),
                 );
               }
+              // 2-column grid using the unified HomeProductCard so the
+              // shop screen and the home strips look identical. The card
+              // width is screen-derived; mainAxisExtent gives the cell
+              // exactly enough height to fit image + price/CTA row +
+              // title + rating + variation pill.
+              final screenW = MediaQuery.sizeOf(context).width;
+              const double hPad     = 16 * 2;
+              const double crossGap = 12;
+              final double cardW    = (screenW - hPad - crossGap) / 2;
+              // image(cardW) + 8 + 28(price+CTA) + 6 + 32(title 2 lines) +
+              // 5 + 14(rating) + 5 + 22(variation pill) + 10 padding
+              final double cellH    = cardW + 130;
               return SliverPadding(
                 padding:
                     const EdgeInsets.fromLTRB(16, 16, 16, 0),
                 sliver: SliverGrid(
                   delegate: SliverChildBuilderDelegate(
-                    (ctx, i) => _ProductCard(
-                        product: filtered[i], index: i),
+                    (ctx, i) => HomeProductCard(
+                        product: filtered[i], width: cardW),
                     childCount: filtered.length,
                   ),
                   gridDelegate:
-                      const SliverGridDelegateWithFixedCrossAxisCount(
+                      SliverGridDelegateWithFixedCrossAxisCount(
                     crossAxisCount:   2,
                     mainAxisSpacing:  12,
                     crossAxisSpacing: 12,
-                    childAspectRatio: 0.60,
+                    mainAxisExtent:   cellH,
                   ),
                 ),
               );
             },
           ),
 
-          const SliverToBoxAdapter(child: SizedBox(height: 100)),
+          // ── "Didn't find it?" request card ───────────────────────────────
+          // Visible at the bottom of every result list. Users who scroll
+          // past all products without finding what they need can submit a
+          // text description + optional reference image so the team can
+          // source it. Same card is embedded in _EmptyState for zero results.
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 12),
+              child: _NotFoundCard(),
+            ),
+          ),
+          const SliverToBoxAdapter(child: SizedBox(height: 24)),
         ],
       ),
       ),
     );
   }
 
-  SliverToBoxAdapter _buildShimmer() {
-    return SliverToBoxAdapter(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-        child: GridView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          gridDelegate:
-              const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount:   2,
-            mainAxisSpacing:  12,
-            crossAxisSpacing: 12,
-            childAspectRatio: 0.60,
-          ),
-          itemCount: 6,
-          itemBuilder: (_, __) => Container(
+  // Returns a SliverGrid (NOT a SliverToBoxAdapter wrapping a nested GridView).
+  // Using a nested GridView.builder created a second internal viewport whose
+  // SliverMultiBoxAdaptorElement could put children into an inactive state via
+  // its scroll-virtualisation GC. When the outer CustomScrollView then tried to
+  // deactivate the whole shimmer sliver during the loading→data transition,
+  // _deactivateRecursively hit those already-inactive elements and threw the
+  // "_lifecycleState == active: is not true" assertion at framework.dart:2134.
+  //
+  // Using SliverGrid here matches the structure of the data state exactly, so
+  // Flutter reuses the SliverGrid element across the transition instead of
+  // deactivating + re-creating one.  The shimmer effect uses the `shimmer`
+  // package (Shimmer.fromColors is a pure RenderBox widget with no
+  // AnimationController lifecycle — no deactivate/activate edge cases).
+  // Plain static placeholder — no animations, no AnimationController, no
+  // ticker. Anything stateful here intersected with SliverGrid's child
+  // recycling/deactivation during the loading→data transition and tripped
+  // the _lifecycleState assertion.
+  Widget _buildShimmer() {
+    return SliverPadding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      sliver: SliverGrid(
+        delegate: SliverChildBuilderDelegate(
+          (_, __) => Container(
             decoration: BoxDecoration(
               color:        GColors.bg1,
               borderRadius: const BorderRadius.all(Radius.circular(16)),
             ),
-          )
-              .animate(onPlay: (c) => c.repeat(reverse: true))
-              .shimmer(duration: 1200.ms, color: GColors.bg2),
+          ),
+          childCount: 6,
+        ),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount:   2,
+          mainAxisSpacing:  12,
+          crossAxisSpacing: 12,
+          childAspectRatio: 0.60,
         ),
       ),
     );
@@ -765,7 +831,9 @@ class _StickyHeaderDelegate extends SliverPersistentHeaderDelegate {
   // Always reserve the strip's height, even before categories load — that
   // way the sticky header doesn't grow / shrink on first render which used
   // to make it briefly overlap the Collections cards beneath it.
-  static const double _kPillsHeight = 78;
+  // 48px tile + 6px gap + ~32px (2-line text at fontSize 10, height 1.15) +
+  // 8px breathing room = 94px
+  static const double _kPillsHeight = 94;
   double get _pillsH => _kPillsHeight;
 
   // Tightened from 172 → 110: matches the actual title-row (44) + search-bar
@@ -777,12 +845,17 @@ class _StickyHeaderDelegate extends SliverPersistentHeaderDelegate {
   @override
   double get maxExtent => topPad + 110 + _pillsH;
 
+  // IMPORTANT: must return false (or near-false). Returning true here triggers
+  // a layout-phase rebuild via _SliverPersistentHeaderRenderObjectElement that
+  // interacts badly with sibling sliver reconciliation and causes the
+  // _deactivateRecursively assertion at framework.dart:2134.
+  //
+  // The dynamic content (search-field state, category pills, filter badge)
+  // is sourced from a separate Stateful child that watches the relevant
+  // providers itself — see _StickyHeaderContent below. That way the header
+  // updates without needing this delegate to signal a layout rebuild.
   @override
-  bool shouldRebuild(_StickyHeaderDelegate old) =>
-      old.search            != search            ||
-      old.activeCatId       != activeCatId       ||
-      old.catsAsync         != catsAsync         ||
-      old.activeFilterCount != activeFilterCount;
+  bool shouldRebuild(_StickyHeaderDelegate old) => false;
 
   @override
   Widget build(
@@ -795,8 +868,14 @@ class _StickyHeaderDelegate extends SliverPersistentHeaderDelegate {
     final _kText1  = _c.text1;
     final _kText2  = _c.text2;
     const brandRed = Color(0xFFEF3752);
+    // alignment: Alignment.topLeft is REQUIRED here so Container fills the
+    // SliverPersistentHeader's tight constraints and places the child at top.
+    // Note: do NOT use `clipBehavior` with just `color:` — clipBehavior
+    // requires `decoration` to be set, otherwise Container throws an
+    // assertion in debug builds and the header renders as empty/white.
     return Container(
       color: _kBg,
+      alignment: Alignment.topLeft,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -955,86 +1034,126 @@ class _StickyHeaderDelegate extends SliverPersistentHeaderDelegate {
           ),
 
           // ── Category pills ────────────────────────────────────────────
+          // Outer SizedBox shrinks with shrinkOffset so the Column total
+          // height matches the persistent-header's current extent. Inside,
+          // ClipRect + OverflowBox lets the pills always render at their
+          // full natural height (no internal squish/overflow) while only
+          // the visible band is painted — clean fade-out on scroll.
           if (_pillsH > 0)
-            SizedBox(
-              height: _pillsH,
-              child: catsAsync.when(
-                loading: () => const SizedBox.shrink(),
-                error:   (_, __) => const SizedBox.shrink(),
-                data: (cats) {
+            Opacity(
+              opacity: (1.0 - shrinkOffset / _pillsH).clamp(0.0, 1.0),
+              child: SizedBox(
+                height: (_pillsH - shrinkOffset).clamp(0.0, _pillsH),
+                child: ClipRect(
+                  child: OverflowBox(
+                    minHeight: _pillsH,
+                    maxHeight: _pillsH,
+                    alignment: Alignment.topCenter,
+                    child: SizedBox(
+                      height: _pillsH,
+                child: catsAsync.when(
+                  // Show shimmer skeleton pills during the first network round-trip.
+                  // The header reserves 94px for the strip whether or not data
+                  // has arrived (see _kPillsHeight comment) — leaving that band
+                  // empty made the page look broken / very slow. The skeleton
+                  // tells the eye "structure is here, just hydrating".
+                  loading: () => _CategoryPillsSkeleton(
+                    cardBg: _kCardBg, border: _kBorder,
+                  ),
+                  // On error the strip stays empty so the user can still browse
+                  // via Collections / All Categories below (which use a
+                  // different provider and will load independently).
+                  error:   (_, __) => const SizedBox.shrink(),
+                  data: (cats) {
                   final allItems = <Map<String, dynamic>>[
                     {'id': 'all', 'name': 'All'},
                     ...cats,
                   ];
-                  return ListView.separated(
-                    padding:         const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                  // Use SingleChildScrollView+Row instead of ListView.separated
+                  // because ListView creates an internal Viewport with
+                  // SliverMultiBoxAdaptorElement that GCs off-screen children
+                  // to an inactive state.  When this header rebuilds, the
+                  // outer CustomScrollView's _deactivateRecursively walked
+                  // into those inactive children and tripped the
+                  // "_lifecycleState == active" assertion at framework.dart:2134.
+                  // Row lays out all pills eagerly — no virtualisation, no
+                  // inactive children, no double-deactivation.
+                  return SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
-                    itemCount:       allItems.length,
-                    separatorBuilder: (_, __) => const Gap(14),
-                    itemBuilder: (_, i) {
-                      final cat   = allItems[i];
-                      final id    = (cat['id']  ?? cat['_id']  ?? '').toString();
-                      final name  = (cat['name'] ?? id).toString();
-                      // Use name as the filter key (matches web ?category=<name>)
-                      final filterKey = id == 'all' ? 'all' : name;
-                      final emoji = id == 'all' ? '🛍️' : _emojiForCat(name);
-                      final sel   = activeCatId == filterKey;
-                      return GestureDetector(
-                        onTap: () => onCatSelected(filterKey),
-                        child: SizedBox(
-                          width: 64,
-                          child: Column(
-                            mainAxisAlignment: MainAxisAlignment.start,
-                            children: [
-                              AnimatedContainer(
-                                duration: 200.ms,
-                                width: 44,
-                                height: 44,
-                                decoration: BoxDecoration(
-                                  color: sel ? brandRed : _kCardBg,
-                                  shape: BoxShape.circle,
-                                  border: Border.all(
-                                    color: sel ? brandRed : _kBorder,
-                                    width: 1.5,
-                                  ),
-                                  boxShadow: sel
-                                      ? [BoxShadow(
-                                          color: brandRed.withValues(alpha: 0.3),
-                                          blurRadius: 8,
-                                          offset: const Offset(0, 2),
-                                        )]
-                                      : null,
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+                    physics: const BouncingScrollPhysics(),
+                    child: Row(
+                      children: [
+                        for (int i = 0; i < allItems.length; i++) ...[
+                          if (i > 0) const Gap(14),
+                          Builder(builder: (_) {
+                            final cat   = allItems[i];
+                            final id    = (cat['id']  ?? cat['_id']  ?? '').toString();
+                            final name  = (cat['name'] ?? id).toString();
+                            final filterKey = id;
+                            final emoji = id == 'all' ? '🛍️' : _emojiForCat(name);
+                            final sel   = activeCatId == filterKey;
+                            return GestureDetector(
+                              onTap: () => onCatSelected(filterKey),
+                              child: SizedBox(
+                                width: 64,
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.start,
+                                  children: [
+                                    AnimatedContainer(
+                                      duration: 200.ms,
+                                      width: 48,
+                                      height: 48,
+                                      decoration: BoxDecoration(
+                                        color: sel ? brandRed : _kCardBg,
+                                        borderRadius: BorderRadius.circular(12),
+                                        border: Border.all(
+                                          color: sel ? brandRed : _kBorder,
+                                          width: 1.5,
+                                        ),
+                                        boxShadow: sel
+                                            ? [BoxShadow(
+                                                color: brandRed.withValues(alpha: 0.3),
+                                                blurRadius: 8,
+                                                offset: const Offset(0, 2),
+                                              )]
+                                            : null,
+                                      ),
+                                      alignment: Alignment.center,
+                                      child: Text(emoji,
+                                          style: const TextStyle(fontSize: 22)),
+                                    ),
+                                    const Gap(6),
+                                    Text(
+                                      name,
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      textAlign: TextAlign.center,
+                                      style: GoogleFonts.inter(
+                                        fontSize:   10,
+                                        height: 1.15,
+                                        fontWeight: sel
+                                            ? FontWeight.w700
+                                            : FontWeight.w500,
+                                        color: sel ? brandRed : _kText1,
+                                      ),
+                                    ),
+                                  ],
                                 ),
-                                alignment: Alignment.center,
-                                child: Text(emoji,
-                                    style: const TextStyle(fontSize: 20)),
                               ),
-                              const Gap(6),
-                              // Full label with two lines so longer names
-                              // (e.g. "Home & Decor") don't get truncated.
-                              Text(
-                                name,
-                                maxLines: 2,
-                                overflow: TextOverflow.ellipsis,
-                                textAlign: TextAlign.center,
-                                style: GoogleFonts.inter(
-                                  fontSize:   10,
-                                  height: 1.15,
-                                  fontWeight: sel
-                                      ? FontWeight.w700
-                                      : FontWeight.w500,
-                                  color: sel ? brandRed : _kText1,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      );
-                    },
+                            );
+                          }),
+                        ],
+                      ],
+                    ),
                   );
                 },
               ),
-            ),
+                    ), // close innermost SizedBox(height: _pillsH)
+                  ), // close OverflowBox
+                ), // close ClipRect
+              ), // close outer SizedBox(height: clamp)
+            ), // close Opacity
         ],
       ),
     );
@@ -1423,6 +1542,8 @@ class _ProductCardState extends ConsumerState<_ProductCard>
     with SingleTickerProviderStateMixin {
   late final AnimationController _scaleCtrl;
   late final Animation<double> _scaleAnim;
+  late final PageController _pageCtrl;
+  int _imgPage = 0;
 
   @override
   void initState() {
@@ -1435,6 +1556,7 @@ class _ProductCardState extends ConsumerState<_ProductCard>
       duration:   120.ms,
     );
     _scaleAnim = _scaleCtrl;
+    _pageCtrl  = PageController();
   }
 
   /// After the user first taps the heart we own the state locally.
@@ -1452,7 +1574,7 @@ class _ProductCardState extends ConsumerState<_ProductCard>
       }
     } catch (_) {
       // Revert the optimistic toggle on failure and notify user.
-      if (mounted) {
+      if (mounted && context.mounted) {
         setState(() => _wishlisted = !_wishlisted); // revert
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text('Could not update wishlist. Please try again.',
@@ -1471,7 +1593,16 @@ class _ProductCardState extends ConsumerState<_ProductCard>
   @override
   void dispose() {
     _scaleCtrl.dispose();
+    _pageCtrl.dispose();
     super.dispose();
+  }
+
+  @override
+  void deactivate() {
+    // Stop any in-progress animation so AnimatedBuilder cannot call
+    // markNeedsBuild() on an inactive element (tab switch / route pop).
+    _scaleCtrl.stop();
+    super.deactivate();
   }
 
   void _onTapDown(TapDownDetails _) => _scaleCtrl.reverse();
@@ -1518,6 +1649,26 @@ class _ProductCardState extends ConsumerState<_ProductCard>
         ? images.first
         : null;
 
+    // ── Variation info ──────────────────────────────────────────────────
+    final variantList = (p['variants'] as List?) ?? (p['options'] as List?) ?? const [];
+    final variantCount = variantList.length;
+
+    // Try to extract color hex values for swatch dots (only if ≤ 4 variants)
+    final List<Color> swatchColors = [];
+    if (variantCount > 0 && variantCount <= 4) {
+      for (final v in variantList) {
+        if (v is Map) {
+          final raw = ((v['color'] ?? v['colorHex'] ?? v['hex'] ?? '')).toString().trim();
+          final clean = raw.startsWith('#') ? raw.substring(1) : raw;
+          if (clean.length == 6) {
+            try {
+              swatchColors.add(Color(int.parse('FF$clean', radix: 16)));
+            } catch (_) {}
+          }
+        }
+      }
+    }
+
     final price    = double.tryParse(basePrice)    ?? 0;
     final origP    = double.tryParse(originalPrice) ?? 0;
     final hasOrig  = origP > price && origP > 0;
@@ -1551,7 +1702,7 @@ class _ProductCardState extends ConsumerState<_ProductCard>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // ── 1:1 square image ────────────────────────────────────
+              // ── Image area — swipe through product images ─────────────
               AspectRatio(
                 aspectRatio: 1,
                 child: ClipRRect(
@@ -1565,13 +1716,66 @@ class _ProductCardState extends ConsumerState<_ProductCard>
                       // Background
                       Container(color: _kImgBg),
 
-                      // Image or emoji fallback
-                      if (firstImage != null)
+                      // Image(s) — gesture-driven swipe to avoid nested PageView
+                      // viewport (PageView creates its own SliverFillViewport
+                      // with virtualisation that can leave inactive elements,
+                      // causing the same _deactivateRecursively assertion).
+                      // GiftImage.src is dynamic — pass the raw image entry
+                      // (Map {url, alt} or String); GiftImage resolves it.
+                      // Calling .toString() on a Map yields "{url: ...}" which
+                      // is NOT a usable URL, hence why multi-image cards
+                      // were showing the fallback emoji on a black bg.
+                      if (images != null && images.length > 1)
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onHorizontalDragEnd: (details) {
+                            final v = details.primaryVelocity ?? 0;
+                            if (v < -100 && _imgPage < images.length - 1) {
+                              setState(() => _imgPage = _imgPage + 1);
+                            } else if (v > 100 && _imgPage > 0) {
+                              setState(() => _imgPage = _imgPage - 1);
+                            }
+                          },
+                          child: AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 220),
+                            child: GiftImage(
+                              key: ValueKey(_imgPage),
+                              src: images[_imgPage],
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                        )
+                      else if (firstImage != null)
                         GiftImage(src: firstImage, fit: BoxFit.cover)
                       else
                         Center(
                           child: Text(emoji,
                               style: const TextStyle(fontSize: 44)),
+                        ),
+
+                      // Dot indicators — only when > 1 image
+                      if (images != null && images.length > 1)
+                        Positioned(
+                          bottom: 6, left: 0, right: 0,
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: List.generate(
+                              images.length.clamp(0, 5),
+                              (i) => AnimatedContainer(
+                                duration: 200.ms,
+                                width:  _imgPage == i ? 14 : 5,
+                                height: 4,
+                                margin: const EdgeInsets.symmetric(
+                                    horizontal: 2),
+                                decoration: BoxDecoration(
+                                  color: _imgPage == i
+                                      ? Colors.white
+                                      : Colors.white.withOpacity(0.45),
+                                  borderRadius: BorderRadius.circular(2),
+                                ),
+                              ),
+                            ),
+                          ),
                         ),
 
                       // Dynamic badge stack top-left — NEW / TRENDING / LOW STOCK etc.
@@ -1690,16 +1894,38 @@ class _ProductCardState extends ConsumerState<_ProductCard>
                                   color: _kText2),
                               overflow: TextOverflow.ellipsis,
                             ),
-                          if (ratingD == null && ratingCount == 0)
-                            Text(
-                              'Free delivery',
-                              style: GoogleFonts.inter(
-                                  fontSize: 10,
-                                  color: const Color(0xFF10B981),
-                                  fontWeight: FontWeight.w600),
-                            ),
                         ],
                       ),
+
+                      // Variation swatches / count row
+                      if (variantCount > 0) ...[
+                        const Gap(4),
+                        Row(
+                          children: [
+                            if (swatchColors.length >= 2) ...[
+                              ...swatchColors.map((sc) => Container(
+                                width: 9, height: 9,
+                                margin: const EdgeInsets.only(right: 3),
+                                decoration: BoxDecoration(
+                                  color: sc,
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                    color: _kBorder, width: 0.8),
+                                ),
+                              )),
+                              const Gap(3),
+                            ],
+                            Text(
+                              '$variantCount ${variantCount == 1 ? 'option' : 'options'}',
+                              style: GoogleFonts.inter(
+                                fontSize: 9.5,
+                                color: _kText2,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ),
+                      ],
 
                       const Spacer(),
 
@@ -1790,10 +2016,15 @@ class _ProductCardState extends ConsumerState<_ProductCard>
           ),
         ),
       ),
-    )
-        .animate(delay: (widget.index * 40).ms)
-        .fadeIn(duration: 350.ms)
-        .slideY(begin: 0.06, end: 0);
+    );
+    // Note: removed `.animate().fadeIn().slideY()` entry animation here.
+    // flutter_animate's `Animate` widget wraps each card in a Stateful
+    // _AnimateState with its own AnimationController. With SliverGrid
+    // recycling cards as the user scrolls, those controllers' lifecycle
+    // intersected with element deactivation in a way that produced the
+    // "_lifecycleState == active" assertion at framework.dart:2134.
+    // Card entrance is now an immediate render — slightly less polished
+    // but stable.
   }
 }
 
@@ -1808,50 +2039,359 @@ class _EmptyState extends StatelessWidget {
   Widget build(BuildContext context) {
     final _kText0 = GColors.of(context).text0;
     final _kText2 = GColors.of(context).text2;
-    return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('🔍', style: TextStyle(fontSize: 52)),
-            const Gap(16),
-            Text(
-              'No gifts found',
-              style: GoogleFonts.inter(
-                fontSize:   18,
-                fontWeight: FontWeight.w700,
-                color:      _kText0,
+    // Use a Column that fills the remaining space so the emoji/text centres
+    // in the upper portion and the NotFoundCard anchors to the bottom.
+    return Column(
+      children: [
+        Expanded(
+          child: Center(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('🔍', style: TextStyle(fontSize: 52)),
+                  const Gap(16),
+                  Text(
+                    'No gifts found',
+                    style: GoogleFonts.inter(
+                      fontSize:   18,
+                      fontWeight: FontWeight.w700,
+                      color:      _kText0,
+                    ),
+                  ),
+                  const Gap(6),
+                  Text(
+                    'Try a different search or clear the filters',
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.inter(fontSize: 13, color: _kText2),
+                  ),
+                  if (hasFilters) ...[
+                    const Gap(20),
+                    GestureDetector(
+                      onTap: onClear,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 10),
+                        decoration: BoxDecoration(
+                          color:        _kGold,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          'Clear Filters',
+                          style: GoogleFonts.inter(
+                            fontSize:   13,
+                            fontWeight: FontWeight.w700,
+                            color:      Colors.black,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
-            const Gap(6),
-            Text(
-              'Try a different search or category',
-              style: GoogleFonts.inter(fontSize: 14, color: _kText2),
-            ),
-            if (hasFilters) ...[
-              const Gap(20),
-              GestureDetector(
-                onTap: onClear,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 16, vertical: 10),
-                  decoration: BoxDecoration(
-                    color:        _kGold,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    'Clear Filters',
-                    style: GoogleFonts.inter(
-                      fontSize:   13,
-                      fontWeight: FontWeight.w700,
-                      color:      Colors.black,
-                    ),
+          ),
+        ),
+        // ── Request card — let user tell us what they couldn't find ──────
+        _NotFoundCard(),
+        const SizedBox(height: 24),
+      ],
+    );
+  }
+}
+
+// ─── Not-found request card ───────────────────────────────────────────────────
+// Shown (1) at the end of the product grid, (2) inside _EmptyState.
+// Lets the user describe a product we don't carry and optionally attach a
+// reference image. POSTs to /feedback/product-requests via FormData.
+
+class _NotFoundCard extends ConsumerStatefulWidget {
+  const _NotFoundCard();
+
+  @override
+  ConsumerState<_NotFoundCard> createState() => _NotFoundCardState();
+}
+
+class _NotFoundCardState extends ConsumerState<_NotFoundCard> {
+  final _ctrl   = TextEditingController();
+  String? _imagePath;
+  bool _submitting = false;
+  bool _submitted  = false;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickImage() async {
+    final picker = ImagePicker();
+    final xfile  = await picker.pickImage(
+      source:       ImageSource.gallery,
+      imageQuality: 70,
+      maxWidth:     1024,
+    );
+    if (xfile != null && mounted) {
+      setState(() => _imagePath = xfile.path);
+    }
+  }
+
+  Future<void> _submit() async {
+    final text = _ctrl.text.trim();
+    if (text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please describe the product first')),
+      );
+      return;
+    }
+    setState(() => _submitting = true);
+    try {
+      final dio = ref.read(dioProvider);
+      final data = FormData.fromMap({
+        'description': text,
+        if (_imagePath != null)
+          'referenceImage': await MultipartFile.fromFile(
+            _imagePath!,
+            filename: 'reference.jpg',
+          ),
+      });
+      await dio.post('/feedback/product-requests', data: data);
+      if (mounted) setState(() { _submitting = false; _submitted = true; });
+    } catch (_) {
+      if (mounted) {
+        setState(() => _submitting = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Couldn't send. Please try again.")),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors  = GColors.of(context);
+    final bg1     = colors.bg1;
+    final text0   = colors.text0;
+    final text2   = colors.text2;
+    final border  = colors.border;
+
+    // ── Success state ────────────────────────────────────────────────────────
+    if (_submitted) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Container(
+          padding: const EdgeInsets.all(20),
+          decoration: BoxDecoration(
+            color:        bg1,
+            borderRadius: BorderRadius.circular(14),
+            border:       Border.all(color: border),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Container(
+                width: 36, height: 36,
+                decoration: BoxDecoration(
+                  color:        const Color(0xFF22C55E).withOpacity(0.15),
+                  shape:        BoxShape.circle,
+                ),
+                child: const Icon(Icons.check_rounded,
+                    color: Color(0xFF22C55E), size: 20),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  "Request sent! We'll look into it.",
+                  style: GoogleFonts.inter(
+                    fontSize:   13,
+                    fontWeight: FontWeight.w600,
+                    color:      text0,
                   ),
                 ),
               ),
             ],
-          ],
+          ),
         ),
       );
+    }
+
+    // ── Input state ──────────────────────────────────────────────────────────
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Container(
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          color:        bg1,
+          borderRadius: BorderRadius.circular(14),
+          border:       Border.all(color: border),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            Row(
+              children: [
+                const Text('🔍', style: TextStyle(fontSize: 22)),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        "Didn't find what you need?",
+                        style: GoogleFonts.inter(
+                          fontSize:   14,
+                          fontWeight: FontWeight.w700,
+                          color:      text0,
+                        ),
+                      ),
+                      const SizedBox(height: 1),
+                      Text(
+                        "Tell us — we'll source it for you",
+                        style: GoogleFonts.inter(
+                          fontSize: 11,
+                          color:    text2,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+
+            // Description field
+            TextField(
+              controller:   _ctrl,
+              minLines:     2,
+              maxLines:     4,
+              style:        GoogleFonts.inter(fontSize: 13, color: text0),
+              decoration:   InputDecoration(
+                hintText:        'e.g. "Personalised moon-lamp with our names"',
+                hintStyle:       GoogleFonts.inter(fontSize: 12, color: text2),
+                filled:          true,
+                fillColor:       colors.bg0,
+                contentPadding:  const EdgeInsets.symmetric(
+                    horizontal: 12, vertical: 10),
+                border:          OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide:   BorderSide(color: border),
+                ),
+                enabledBorder:   OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide:   BorderSide(color: border),
+                ),
+                focusedBorder:   OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide:   BorderSide(color: _kGold, width: 1.5),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+
+            // Image row: pick button + thumbnail
+            Row(
+              children: [
+                GestureDetector(
+                  onTap: _pickImage,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 160),
+                    curve:    Curves.easeOut,
+                    width:  _imagePath != null ? 52 : null,
+                    height: _imagePath != null ? 52 : null,
+                    padding: _imagePath != null
+                        ? EdgeInsets.zero
+                        : const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color:        _imagePath != null
+                          ? null
+                          : colors.bg0,
+                      borderRadius: BorderRadius.circular(10),
+                      border:       Border.all(color: border),
+                      image: _imagePath != null
+                          ? DecorationImage(
+                              image: FileImage(File(_imagePath!)),
+                              fit:   BoxFit.cover,
+                            )
+                          : null,
+                    ),
+                    child: _imagePath != null
+                        ? null
+                        : Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.image_outlined,
+                                  size: 16, color: text2),
+                              const SizedBox(width: 6),
+                              Text(
+                                'Add photo',
+                                style: GoogleFonts.inter(
+                                  fontSize: 12,
+                                  color:    text2,
+                                ),
+                              ),
+                            ],
+                          ),
+                  ),
+                ),
+                if (_imagePath != null) ...[
+                  const SizedBox(width: 8),
+                  GestureDetector(
+                    onTap: () => setState(() => _imagePath = null),
+                    child: Container(
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        color:        colors.bg0,
+                        shape:        BoxShape.circle,
+                        border:       Border.all(color: border),
+                      ),
+                      child: Icon(Icons.close_rounded,
+                          size: 12, color: text2),
+                    ),
+                  ),
+                ],
+                const Spacer(),
+
+                // Send button
+                GestureDetector(
+                  onTap: _submitting ? null : _submit,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 160),
+                    curve:    Curves.easeOut,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 10),
+                    decoration: BoxDecoration(
+                      color:        _submitting
+                          ? _kGold.withOpacity(0.6)
+                          : _kGold,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: _submitting
+                        ? const SizedBox(
+                            width: 16, height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color:       Colors.black,
+                            ),
+                          )
+                        : Text(
+                            'Send',
+                            style: GoogleFonts.inter(
+                              fontSize:   13,
+                              fontWeight: FontWeight.w700,
+                              color:      Colors.black,
+                            ),
+                          ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
@@ -1919,14 +2459,31 @@ class _AnimatedSearchHintState extends State<_AnimatedSearchHint> {
   bool _visible = true;
   Timer? _timer;
 
+  // --- Lifecycle-safe active flag -------------------------------------------
+  // context.mounted returns true for both active AND inactive elements
+  // (_lifecycleState != defunct).  That means the old `mounted && context.mounted`
+  // guard does NOT stop async callbacks from firing when the user switches tabs
+  // (element goes active → inactive without being disposed).
+  // _isActive is set synchronously in deactivate() before any queued Dart
+  // events can run, so it's the only reliable guard for deactivated-but-not-
+  // yet-disposed elements.
+  bool _isActive = false;
+
   @override
   void initState() {
     super.initState();
+    _isActive = true;
+    _startTimer();
+  }
+
+  void _startTimer() {
+    _timer?.cancel();
     _timer = Timer.periodic(const Duration(milliseconds: 2500), (_) {
-      if (!mounted) return;
+      if (!_isActive) return;
       setState(() => _visible = false);
       Future.delayed(const Duration(milliseconds: 220), () {
-        if (!mounted) return;
+        // Guard against deactivation that occurred during the 220 ms window.
+        if (!_isActive) return;
         setState(() {
           _idx = (_idx + 1) % widget.hints.length;
           _visible = true;
@@ -1936,7 +2493,27 @@ class _AnimatedSearchHintState extends State<_AnimatedSearchHint> {
   }
 
   @override
+  void deactivate() {
+    // Cancel timer synchronously so no further ticks or Future.delayed
+    // callbacks can reach setState() on an inactive element.
+    _isActive = false;
+    _timer?.cancel();
+    _timer = null;
+    super.deactivate();
+  }
+
+  @override
+  void activate() {
+    // Restart hint cycling when this element is re-inserted into the tree
+    // (e.g. user switches back to the Shop tab).
+    super.activate();
+    _isActive = true;
+    _startTimer();
+  }
+
+  @override
   void dispose() {
+    _isActive = false;
     _timer?.cancel();
     super.dispose();
   }
@@ -2008,6 +2585,65 @@ class _ShopBrowseCard extends StatelessWidget {
           ),
           Icon(Icons.chevron_right_rounded, size: 16, color: c.text2),
         ]),
+      ),
+    );
+  }
+}
+
+// ─── Category pills skeleton ─────────────────────────────────────────────────
+// Renders 6 placeholder pill tiles (48×48 rounded square + short label below)
+// matching the real strip's metrics so the layout doesn't shift when the
+// fetch resolves. Used during the categories provider's first network
+// round-trip — replaces the previously-empty 94px band that made Shop look
+// slow to load.
+
+class _CategoryPillsSkeleton extends StatelessWidget {
+  final Color cardBg;
+  final Color border;
+  const _CategoryPillsSkeleton({required this.cardBg, required this.border});
+
+  @override
+  Widget build(BuildContext context) {
+    // Highlight colour matches the real header so the shimmer doesn't clash.
+    final highlight = border;
+    return Shimmer.fromColors(
+      baseColor:      cardBg,
+      highlightColor: highlight,
+      period: const Duration(milliseconds: 1400),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        physics: const NeverScrollableScrollPhysics(),
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+        child: Row(
+          children: List.generate(6, (i) {
+            return Padding(
+              padding: EdgeInsets.only(right: i < 5 ? 14 : 0),
+              child: SizedBox(
+                width: 64,
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: 48, height: 48,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    const Gap(6),
+                    Container(
+                      width: 44, height: 10,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
+        ),
       ),
     );
   }

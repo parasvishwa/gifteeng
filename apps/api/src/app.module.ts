@@ -1,21 +1,23 @@
 import { Module } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
 import { ConfigModule } from "@nestjs/config";
-import { ThrottlerModule } from "@nestjs/throttler";
+import { ThrottlerModule, ThrottlerGuard } from "@nestjs/throttler";
+import { ScheduleModule } from "@nestjs/schedule";
 
 import { PrismaModule } from "./prisma/prisma.module";
 import { HealthController } from "./common/health.controller";
 
 import { AuthB2cModule } from "./modules/auth-b2c/auth-b2c.module";
 import { AuthB2bModule } from "./modules/auth-b2b/auth-b2b.module";
+import { AuthSellerModule } from "./modules/auth-seller/auth-seller.module";
+import { MarketplaceModule } from "./modules/marketplace/marketplace.module";
+import { OrderRoutingModule } from "./modules/order-routing/order-routing.module";
+import { SellerPayoutsModule } from "./modules/seller-payouts/seller-payouts.module";
 import { ProductsModule } from "./modules/products/products.module";
 import { CartModule } from "./modules/cart/cart.module";
 import { CheckoutModule } from "./modules/checkout/checkout.module";
 import { OrdersModule } from "./modules/orders/orders.module";
 import { ShippingModule } from "./modules/shipping/shipping.module";
-import { WalletModule } from "./modules/wallet/wallet.module";
-import { CampaignsModule } from "./modules/campaigns/campaigns.module";
-import { CompaniesModule } from "./modules/companies/companies.module";
-import { CatalogsModule } from "./modules/catalogs/catalogs.module";
 import { ReviewsModule } from "./modules/reviews/reviews.module";
 import { DiscountsModule } from "./modules/discounts/discounts.module";
 import { FilesModule } from "./modules/files/files.module";
@@ -58,18 +60,24 @@ import { GiftRemindersModule } from "./modules/gift-reminders/gift-reminders.mod
 import { ShopifyMigrateModule } from "./modules/shopify-migrate/shopify-migrate.module";
 import { RealtimeModule } from "./modules/realtime/realtime.module";
 import { AiTargetingModule } from "./modules/ai-targeting/ai-targeting.module";
+import { RecommendationsModule } from "./modules/recommendations/recommendations.module";
 import { CacheModule } from "./modules/cache/cache.module";
 import { ReturnsModule } from "./modules/returns/returns.module";
 import { PrivacyModule } from "./modules/privacy/privacy.module";
+import { ProductionModule } from "./modules/production/production.module";
+import { CustomizerModule } from "./modules/customizer/customizer.module";
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     ThrottlerModule.forRoot([{ ttl: 60_000, limit: 120 }]),
+    ScheduleModule.forRoot(),
     PrismaModule,
     CacheModule,
     AuthB2cModule,
     AuthB2bModule,
+    AuthSellerModule,
+    MarketplaceModule,
     ProductsModule,
     CartModule,
     CheckoutModule,
@@ -77,10 +85,6 @@ import { PrivacyModule } from "./modules/privacy/privacy.module";
     ReturnsModule,
     PrivacyModule,
     ShippingModule,
-    WalletModule,
-    CampaignsModule,
-    CompaniesModule,
-    CatalogsModule,
     ReviewsModule,
     DiscountsModule,
     FilesModule,
@@ -123,7 +127,19 @@ import { PrivacyModule } from "./modules/privacy/privacy.module";
     ShopifyMigrateModule,
     RealtimeModule,
     AiTargetingModule,
+    RecommendationsModule,
+    OrderRoutingModule,
+    SellerPayoutsModule,
+    ProductionModule,
+    CustomizerModule,
   ],
   controllers: [HealthController],
+  // ── Global rate-limit guard ──────────────────────────────────────────────
+  // Without this APP_GUARD binding the `@Throttle()` decorators on auth
+  // endpoints are no-ops (the module is imported but the guard never runs).
+  // Default global bucket is 120 req/min/IP (configured in ThrottlerModule
+  // above); per-route `@Throttle({...})` overrides it for tighter limits on
+  // OTP, login, and bootstrap.
+  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
 export class AppModule {}

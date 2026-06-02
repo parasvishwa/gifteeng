@@ -2,6 +2,7 @@ import { z } from "zod";
 
 export const CartItemInputSchema = z.object({
   productId: z.string().uuid(),
+  sellerProductId: z.string().uuid().optional(), // marketplace — chosen seller offer
   qty: z.number().int().min(1),
   variantOptions: z.record(z.string(), z.string()).optional(),
   customization: z.unknown().optional(),

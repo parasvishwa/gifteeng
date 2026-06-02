@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, BadRequestException, Logger } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import { CartService } from "../cart/cart.service";
 
 export interface UpsertInput {
   occasion:            string;
@@ -36,6 +37,7 @@ export class GiftRemindersService {
   constructor(
     private prisma: PrismaService,
     private notifications: NotificationsService,
+    private cart: CartService,
   ) {}
 
   // ─── CRUD ───────────────────────────────────────────────────────────────
@@ -169,19 +171,28 @@ export class GiftRemindersService {
           const lastOrderedMs = r.lastAutoOrderedAt ? +r.lastAutoOrderedAt : 0;
           const safeToReorder = Date.now() - lastOrderedMs > 180 * 86_400_000;
           if (safeToReorder) {
-            // TODO: wire OrdersService.createAutoOrder here once that helper
-            // exists — for now, surface a stronger push so the customer
-            // manually confirms in the app.
-            await this.notifications.sendToCustomer(r.customerId, {
-              title: "⏰ Auto-order pending",
-              body:  "Confirm the gift you preset for this occasion.",
-              data:  {
-                type:       "gift_reminder_auto_confirm",
-                reminderId: r.id,
-                route:      `/reminders/${r.id}`,
-              },
-            });
-            autoOrdered++;
+            try {
+              // Add the pinned product to the customer's cart so they only
+              // need to confirm address + payment — no manual search needed.
+              await this.cart.addItem(r.customerId, { productId: r.productId, qty: 1 });
+              await this.prisma.giftReminder.update({
+                where: { id: r.id },
+                data:  { lastAutoOrderedAt: now },
+              });
+              const who = r.recipientName?.trim() ? ` for ${r.recipientName.trim()}` : "";
+              await this.notifications.sendToCustomer(r.customerId, {
+                title: "🎁 Gift added to your cart!",
+                body:  `Your ${humaniseOccasion(r.occasion)} gift${who} is ready — tap to checkout.`,
+                data: {
+                  type:       "gift_reminder_auto_cart",
+                  reminderId: r.id,
+                  route:      "/checkout",
+                },
+              });
+              autoOrdered++;
+            } catch (err) {
+              this.log.warn(`Auto-order cart add failed for reminder ${r.id}`, err as Error);
+            }
           }
         }
       } catch (err) {

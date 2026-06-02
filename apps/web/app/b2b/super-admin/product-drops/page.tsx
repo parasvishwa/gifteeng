@@ -122,8 +122,11 @@ export default function AdminProductDrops() {
 
   useEffect(() => {
     refresh();
-    // Fetch products for the picker (first 500 should cover nearly everyone).
-    api<any>("/products?pageSize=500").then((raw) => {
+    // Admin product picker — fetch via /products/admin/list so drafts and
+    // b2c-disabled products are still selectable. The public /products
+    // endpoint filters on b2cEnabled: true, which is why this dropdown
+    // could come back empty for stores still working on their catalogue.
+    api<any>("/products/admin/list?pageSize=500&page=1").then((raw) => {
       const items: any[] = Array.isArray(raw) ? raw : (raw?.items ?? []);
       setProducts(
         items.map((p) => ({

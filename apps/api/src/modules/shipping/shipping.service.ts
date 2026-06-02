@@ -81,12 +81,37 @@ export class ShippingService {
         city: "India",
         zone: "Other",
         cod: false,
+        sameDay: false,
         dispatchInBusinessDays: 3,
         deliveryInBusinessDays: 7,
         dispatchDate: isoDate(dispatchDate),
         deliveryDate: isoDate(deliveryDate),
         etaLabel: `Arrives by ${formatShort(deliveryDate)}`,
         message: "Standard shipping to this pincode",
+      };
+    }
+
+    // Same-day delivery branch — Mumbai metro powered by Shadowfax.
+    // Cut-off is 14:00 IST: orders placed before that ship same day,
+    // anything later promises "Tomorrow".
+    if (match.sameDay) {
+      const now = new Date();
+      const istHour = (now.getUTCHours() + 5) % 24; // crude IST hour
+      const beforeCutoff = istHour < 14 - 1; // +30min already in +5 part-day; safe margin
+      const deliveryDate = beforeCutoff ? now : addBusinessDays(now, 1);
+      return {
+        deliverable: true,
+        pincode,
+        city: match.city,
+        zone: match.zone,
+        cod: match.cod,
+        sameDay: true,
+        dispatchInBusinessDays: 0,
+        deliveryInBusinessDays: beforeCutoff ? 0 : 1,
+        dispatchDate: isoDate(deliveryDate),
+        deliveryDate: isoDate(deliveryDate),
+        etaLabel: beforeCutoff ? "Same-day delivery" : "Delivered tomorrow",
+        message: "⚡ Same-day delivery available in Mumbai",
       };
     }
 
@@ -99,6 +124,7 @@ export class ShippingService {
       city: match.city,
       zone: match.zone,
       cod: match.cod,
+      sameDay: false,
       dispatchInBusinessDays: match.dispatchDays,
       deliveryInBusinessDays: match.deliveryDays,
       dispatchDate: isoDate(dispatchDate),
@@ -116,6 +142,8 @@ export interface DeliveryEstimate {
   city?: string;
   zone?: string;
   cod?: boolean;
+  /** true when this pincode qualifies for same-day delivery (Mumbai metro). */
+  sameDay?: boolean;
   dispatchInBusinessDays?: number;
   deliveryInBusinessDays?: number;
   dispatchDate?: string; // YYYY-MM-DD
@@ -133,11 +161,15 @@ interface PincodeRule {
   dispatchDays: number;
   deliveryDays: number;
   cod: boolean;
+  /** true → use Shadowfax same-day delivery for this region. */
+  sameDay?: boolean;
 }
 
 const PINCODE_RULES: PincodeRule[] = [
-  // Mumbai metro
-  { prefix: /^40[01]\d{3}$/, city: "Mumbai",     zone: "Maharashtra", dispatchDays: 2, deliveryDays: 2, cod: true  },
+  // Mumbai metro — same-day delivery via Shadowfax
+  // 400001-400107 (Mumbai), 400601-400615 (Thane), 400701-400710 (Navi Mumbai),
+  // 401101-401209 (Mira Road / Vasai). Prefix /^40[01]\d{3}/ already covers all.
+  { prefix: /^40[01]\d{3}$/, city: "Mumbai",     zone: "Maharashtra", dispatchDays: 0, deliveryDays: 0, cod: true, sameDay: true },
   // Pune / Pimpri-Chinchwad
   { prefix: /^41[12]\d{3}$/, city: "Pune",       zone: "Maharashtra", dispatchDays: 2, deliveryDays: 3, cod: true  },
   // Other Maharashtra

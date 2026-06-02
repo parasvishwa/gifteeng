@@ -36,8 +36,31 @@ export default function AdminStockImagesPage() {
 
   const load = async () => {
     setIsLoading(true);
-    const data = await safeGet<StockImage[]>("/stock-images", []);
-    setImages(data || []);
+    // The API returns `{ items, total, page, pageSize }` — NOT a bare array.
+    // The previous code assumed an array and then crashed `.filter()` on
+    // the object, which surfaced as the client-side exception on
+    // /super-admin/stock-images. Also bump pageSize so admins with >20
+    // images don't get a silently truncated grid.
+    const data = await safeGet<{ items: StockImage[] } | StockImage[]>(
+      "/stock-images?pageSize=500&page=1",
+      { items: [] },
+    );
+    const list: any[] = Array.isArray(data)
+      ? data
+      : ((data as { items?: StockImage[] })?.items ?? []);
+    // Defensive coercion — any null label / category previously crashed
+    // the search filter's `.toLowerCase()` call.
+    setImages(
+      list.map((i: any) => ({
+        id:         String(i.id ?? ""),
+        label:      String(i.label ?? ""),
+        image_url:  String(i.image_url ?? i.url ?? ""),
+        category:   String(i.category ?? ""),
+        is_active:  Boolean(i.is_active ?? i.isActive ?? false),
+        sort_order: Number(i.sort_order ?? i.sortOrder ?? 0),
+        created_at: String(i.created_at ?? i.createdAt ?? ""),
+      })),
+    );
     setIsLoading(false);
   };
 
@@ -52,10 +75,13 @@ export default function AdminStockImagesPage() {
 
   const filtered = useMemo(() => {
     let list = images;
-    if (filterCat !== "all") list = list.filter(i => i.category === filterCat);
+    if (filterCat !== "all") list = list.filter(i => (i.category ?? "") === filterCat);
     if (search.trim()) {
       const q = search.toLowerCase();
-      list = list.filter(i => i.label.toLowerCase().includes(q) || i.category.toLowerCase().includes(q));
+      list = list.filter(i =>
+        (i.label ?? "").toLowerCase().includes(q) ||
+        (i.category ?? "").toLowerCase().includes(q),
+      );
     }
     return list;
   }, [images, search, filterCat]);

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
@@ -13,7 +14,9 @@ import 'package:gallery_saver_plus/gallery_saver.dart';
 import 'package:gap/gap.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:palette_generator/palette_generator.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:pretty_qr_code/pretty_qr_code.dart';
 import 'package:screenshot/screenshot.dart';
 
 import '../../../../core/api/api_client.dart';
@@ -298,10 +301,26 @@ class _FullCanvasEditorState extends ConsumerState<FullCanvasEditor> {
   bool _preview = false;
   int _idCounter = 0;
 
-  // Gesture tracking
+  // Gesture tracking (element-level)
   double _startScale = 1, _startRotation = 0;
   Offset _startFocal = Offset.zero;
   double _startX = 0, _startY = 0;
+
+  // ── Phase B: canvas-level pinch-zoom (viewport only, not design data) ──
+  double _viewScale = 1.0;
+  double _viewScaleStart = 1.0;
+
+  // ── Phase C: extracted palette from last uploaded image ─────────────────
+  List<Color> _extractedPalette = [];
+
+  // ── Phase C: QR tool state ───────────────────────────────────────────────
+  bool _qrToolOpen = false;
+  String _qrUrl = 'https://gifteeng.com';
+  Color _qrFgColor = const Color(0xFF1A1A2E);
+
+  // ── Phase B: floating mini-toolbar position above selected element ───────
+  // Computed from the selected element's position every time selection changes
+  Offset? _floatingToolbarPos;
 
   Size _canvasSize = Size.zero;
   final _screenshotCtrl = ScreenshotController();
@@ -336,6 +355,18 @@ class _FullCanvasEditorState extends ConsumerState<FullCanvasEditor> {
   // ─── Helpers ────────────────────────────────────────────────────────────
 
   String _newId() => 'el_${++_idCounter}_${DateTime.now().microsecondsSinceEpoch}';
+
+  /// Update the floating mini-toolbar anchor above the selected element.
+  void _updateFloatingPos() {
+    final sel = _selected;
+    if (sel == null || _canvasSize == Size.zero) {
+      _floatingToolbarPos = null;
+      return;
+    }
+    // Position toolbar 40px above the element center
+    final yAbove = (sel.y * _viewScale) - (sel.baseHeight * sel.scale * _viewScale / 2) - 44;
+    _floatingToolbarPos = Offset(sel.x * _viewScale, yAbove.clamp(4, _canvasSize.height - 40));
+  }
 
   void _snapshot() {
     _undo.add(_elements.map((e) => e.clone(e.id)).toList());
@@ -421,10 +452,31 @@ class _FullCanvasEditorState extends ConsumerState<FullCanvasEditor> {
           bytes: bytes, baseWidth: target, baseHeight: target,
         ));
         _selectedId = id;
+        _updateFloatingPos();
       });
+      // ── Phase C: palette_generator — extract colors from uploaded image ──
+      _extractPalette(bytes);
     } catch (e) {
       _snack('Could not pick image: $e');
     }
+  }
+
+  /// Extracts a 6-color palette from raw image bytes using palette_generator.
+  Future<void> _extractPalette(Uint8List bytes) async {
+    try {
+      final codec = await ui.instantiateImageCodec(bytes, targetWidth: 200);
+      final frame = await codec.getNextFrame();
+      final provider = MemoryImage(bytes);
+      final generator = await PaletteGenerator.fromImageProvider(
+        provider, maximumColorCount: 6,
+      );
+      final colors = [
+        if (generator.dominantColor != null) generator.dominantColor!.color,
+        ...generator.paletteColors.map((c) => c.color),
+      ].take(6).toList();
+      if (mounted) setState(() => _extractedPalette = colors);
+      frame.image.dispose();
+    } catch (_) { /* silently ignore — palette is optional */ }
   }
 
   Future<void> _addShape() async {
@@ -451,6 +503,62 @@ class _FullCanvasEditorState extends ConsumerState<FullCanvasEditor> {
     });
   }
 
+  /// Phase C: Renders a PrettyQrCode widget to image bytes and adds to canvas.
+  Future<void> _addQrCode() async {
+    if (_canvasSize == Size.zero) return;
+    HapticFeedback.selectionClick();
+    try {
+      final qrWidget = PrettyQrView.data(
+        data: _qrUrl.isEmpty ? 'https://gifteeng.com' : _qrUrl,
+        decoration: PrettyQrDecoration(
+          shape: PrettyQrSmoothSymbol(color: _qrFgColor, roundFactor: 1),
+        ),
+      );
+
+      final imageBytes = await _renderWidgetToBytes(qrWidget, 300, 300);
+      if (imageBytes == null) { _snack('QR render failed'); return; }
+
+      _snapshot();
+      final id = _newId();
+      final size = _canvasSize.width * 0.35;
+      setState(() {
+        _elements.add(CanvasElement(
+          id: id, type: 'image',
+          x: _canvasSize.width / 2, y: _canvasSize.height / 2,
+          bytes: imageBytes, baseWidth: size, baseHeight: size,
+        ));
+        _selectedId = id;
+        _qrToolOpen = false;
+        _updateFloatingPos();
+      });
+    } catch (e) {
+      _snack('Could not add QR: $e');
+    }
+  }
+
+  /// Renders a widget to PNG bytes using ScreenshotController off-screen capture.
+  Future<Uint8List?> _renderWidgetToBytes(Widget widget, double w, double h) async {
+    try {
+      final ctrl = ScreenshotController();
+      return await ctrl.captureFromLongWidget(
+        MediaQuery(
+          data: const MediaQueryData(),
+          child: MaterialApp(
+            debugShowCheckedModeBanner: false,
+            home: Scaffold(
+              backgroundColor: Colors.white,
+              body: Center(
+                child: SizedBox(width: w, height: h, child: widget),
+              ),
+            ),
+          ),
+        ),
+        pixelRatio: 2,
+        delay: const Duration(milliseconds: 100),
+      );
+    } catch (_) { return null; }
+  }
+
   void _deleteSelected() {
     if (_selectedId == null) return;
     _snapshot();
@@ -458,6 +566,7 @@ class _FullCanvasEditorState extends ConsumerState<FullCanvasEditor> {
     setState(() {
       _elements.removeWhere((e) => e.id == _selectedId);
       _selectedId = null;
+      _floatingToolbarPos = null;
     });
   }
 
@@ -1238,19 +1347,48 @@ class _FullCanvasEditorState extends ConsumerState<FullCanvasEditor> {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        // Top toolbar
-        _buildTopBar(),
-        // Canvas
-        Expanded(child: _buildCanvas()),
-        // Action bar (when selected)
-        if (_selected != null && !_preview) _buildActionBar(_selected!),
-        // Design tabs
-        _buildDesignTabs(),
-        // Bottom toolbar
-        if (!_preview) _buildBottomToolbar(),
-      ],
+    // ── Phase C: hardware keyboard shortcuts (tablet/desktop / Bluetooth kbd) ──
+    return Focus(
+      autofocus: true,
+      onKeyEvent: (node, event) {
+        if (event is! KeyDownEvent) return KeyEventResult.ignored;
+        final isCtrl = HardwareKeyboard.instance.isControlPressed ||
+                       HardwareKeyboard.instance.isMetaPressed;
+        // Delete / Backspace
+        if (event.logicalKey == LogicalKeyboardKey.delete ||
+            event.logicalKey == LogicalKeyboardKey.backspace) {
+          if (_selectedId != null) { _deleteSelected(); return KeyEventResult.handled; }
+        }
+        if (isCtrl) {
+          if (event.logicalKey == LogicalKeyboardKey.keyZ &&
+              !HardwareKeyboard.instance.isShiftPressed) {
+            _undoLast(); return KeyEventResult.handled;
+          }
+          if ((event.logicalKey == LogicalKeyboardKey.keyZ &&
+               HardwareKeyboard.instance.isShiftPressed) ||
+              event.logicalKey == LogicalKeyboardKey.keyY) {
+            _redoLast(); return KeyEventResult.handled;
+          }
+          if (event.logicalKey == LogicalKeyboardKey.keyD && _selectedId != null) {
+            _duplicateSelected(); return KeyEventResult.handled;
+          }
+        }
+        return KeyEventResult.ignored;
+      },
+      child: Column(
+        children: [
+          // Top toolbar
+          _buildTopBar(),
+          // Canvas
+          Expanded(child: _buildCanvas()),
+          // Action bar (when selected)
+          if (_selected != null && !_preview) _buildActionBar(_selected!),
+          // Design tabs
+          _buildDesignTabs(),
+          // Bottom toolbar
+          if (!_preview) _buildBottomToolbar(),
+        ],
+      ),
     );
   }
 
@@ -1312,36 +1450,63 @@ class _FullCanvasEditorState extends ConsumerState<FullCanvasEditor> {
             builder: (ctx, constraints) {
               _canvasSize = Size(constraints.maxWidth, constraints.maxHeight);
               return GestureDetector(
-                onTap: () => setState(() => _selectedId = null),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Screenshot(
-                    controller: _screenshotCtrl,
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: GColors.bg2,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: GColors.border),
-                      ),
-                      child: Stack(
-                        children: [
-                          Positioned.fill(
-                            child: CachedNetworkImage(
-                              imageUrl: widget.baseImageUrl,
-                              fit: BoxFit.cover,
-                              errorWidget: (_, __, ___) => Container(
-                                color: GColors.bg2,
-                                child: const Center(
-                                  child: Icon(Icons.image_not_supported_outlined,
-                                      color: GColors.text2, size: 40),
+                // Tap outside all elements → deselect
+                onTap: () => setState(() {
+                  _selectedId = null;
+                  _floatingToolbarPos = null;
+                }),
+                // ── Phase B: canvas-level pinch-to-zoom ───────────────────
+                onScaleStart: (d) {
+                  if (d.pointerCount < 2) return;
+                  _viewScaleStart = _viewScale;
+                },
+                onScaleUpdate: (d) {
+                  if (d.pointerCount < 2) return;
+                  setState(() {
+                    _viewScale = (_viewScaleStart * d.scale).clamp(0.5, 3.0);
+                  });
+                },
+                child: Transform.scale(
+                  scale: _viewScale,
+                  alignment: Alignment.center,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Stack(
+                      children: [
+                        // Screenshot wraps only the design content (not the floating UI)
+                        Screenshot(
+                          controller: _screenshotCtrl,
+                          child: Container(
+                            decoration: BoxDecoration(
+                              color: GColors.bg2,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: GColors.border),
+                            ),
+                            child: Stack(
+                              children: [
+                                Positioned.fill(
+                                  child: CachedNetworkImage(
+                                    imageUrl: widget.baseImageUrl,
+                                    fit: BoxFit.cover,
+                                    errorWidget: (_, __, ___) => Container(
+                                      color: GColors.bg2,
+                                      child: const Center(
+                                        child: Icon(Icons.image_not_supported_outlined,
+                                            color: GColors.text2, size: 40),
+                                      ),
+                                    ),
+                                  ),
                                 ),
-                              ),
+                                for (final e in _elements)
+                                  if (e.visible) _buildElement(e),
+                              ],
                             ),
                           ),
-                          for (final e in _elements)
-                            if (e.visible) _buildElement(e),
-                        ],
-                      ),
+                        ),
+                        // ── Phase B: floating mini-toolbar above selection ──
+                        if (_floatingToolbarPos != null && _selectedId != null && !_preview)
+                          _buildFloatingSelectionToolbar(),
+                      ],
                     ),
                   ),
                 ),
@@ -1352,6 +1517,42 @@ class _FullCanvasEditorState extends ConsumerState<FullCanvasEditor> {
       ),
     );
   }
+
+  /// Phase B: compact floating toolbar that appears above the selected element.
+  /// Mirrors the web @floating-ui/react toolbar (delete, duplicate, forward, back).
+  Widget _buildFloatingSelectionToolbar() {
+    final pos = _floatingToolbarPos!;
+    return Positioned(
+      left: (pos.dx - 72).clamp(4.0, _canvasSize.width - 148),
+      top: pos.dy.clamp(4.0, _canvasSize.height - 44),
+      child: Container(
+        decoration: BoxDecoration(
+          color: const Color(0xFF1f1f23),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.5), blurRadius: 12)],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _FloatingBtn(icon: Icons.delete_outline_rounded, color: Colors.red.shade300,
+                tooltip: 'Delete', onTap: _deleteSelected),
+            _divider(),
+            _FloatingBtn(icon: Icons.copy_outlined, tooltip: 'Duplicate',
+                onTap: _duplicateSelected),
+            _FloatingBtn(icon: Icons.arrow_upward_rounded, tooltip: 'Bring Forward',
+                onTap: _bringForward),
+            _FloatingBtn(icon: Icons.arrow_downward_rounded, tooltip: 'Send Backward',
+                onTap: _sendBackward),
+          ],
+        ),
+      ),
+    ).animate().fadeIn(duration: 140.ms).scale(begin: const Offset(0.85, 0.85));
+  }
+
+  Widget _divider() => Container(width: 1, height: 24,
+      margin: const EdgeInsets.symmetric(horizontal: 1),
+      color: Colors.white.withValues(alpha: 0.1));
 
   Widget _buildElement(CanvasElement e) {
     final isSelected = _selectedId == e.id && !_preview;
@@ -1409,7 +1610,10 @@ class _FullCanvasEditorState extends ConsumerState<FullCanvasEditor> {
           behavior: HitTestBehavior.opaque,
           onTap: _preview ? null : () {
             HapticFeedback.selectionClick();
-            setState(() => _selectedId = e.id);
+            setState(() {
+              _selectedId = e.id;
+              _updateFloatingPos();
+            });
           },
           onDoubleTap: _preview ? null : (e.type == 'text' ? () {
             setState(() => _selectedId = e.id);
@@ -1544,26 +1748,162 @@ class _FullCanvasEditorState extends ConsumerState<FullCanvasEditor> {
   }
 
   Widget _buildBottomToolbar() {
-    return Container(
-      padding: EdgeInsets.fromLTRB(
-          8, 8, 8, MediaQuery.of(context).padding.bottom + 20),
-      decoration: const BoxDecoration(
-        color: GColors.bg1,
-        border: Border(top: BorderSide(color: GColors.border)),
-      ),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        child: Row(children: [
-          _BottomToolIcon(icon: Icons.text_fields_rounded, label: 'Text',
-              onTap: _addText),
-          _BottomToolIcon(icon: Icons.add_photo_alternate_outlined, label: 'Image',
-              onTap: _addImage),
-          _BottomToolIcon(icon: Icons.interests_outlined, label: 'Shape',
-              onTap: _addShape),
-          _BottomToolIcon(icon: Icons.grid_view_rounded, label: 'Templates',
-              onTap: _openTemplates),
-        ]),
-      ),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // ── Phase C: extracted palette swatches ──────────────────────────
+        if (_extractedPalette.isNotEmpty)
+          Container(
+            padding: const EdgeInsets.fromLTRB(12, 6, 12, 0),
+            color: GColors.bg1,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Palette from your image',
+                  style: GoogleFonts.inter(
+                    fontSize: 9, fontWeight: FontWeight.w700,
+                    color: GColors.text2, letterSpacing: 0.8)),
+                const Gap(4),
+                Row(children: [
+                  for (final c in _extractedPalette)
+                    GestureDetector(
+                      onTap: () {
+                        // Apply color to selected element
+                        final sel = _selected;
+                        if (sel == null) return;
+                        _snapshot();
+                        setState(() {
+                          if (sel.type == 'text') sel.color = c;
+                          else if (sel.type == 'shape') sel.fillColor = c;
+                        });
+                      },
+                      child: Container(
+                        width: 28, height: 28,
+                        margin: const EdgeInsets.only(right: 6),
+                        decoration: BoxDecoration(
+                          color: c,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: GColors.border, width: 1.5),
+                        ),
+                      ),
+                    ),
+                  const Spacer(),
+                  GestureDetector(
+                    onTap: () => setState(() => _extractedPalette = []),
+                    child: const Icon(Icons.close_rounded, size: 14, color: GColors.text2),
+                  ),
+                ]),
+                const Gap(4),
+              ],
+            ),
+          ).animate().fadeIn(duration: 200.ms).slideY(begin: 0.3, end: 0),
+
+        // ── Phase C: QR tool panel (inline, expandable) ──────────────────
+        if (_qrToolOpen)
+          Container(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+            color: GColors.bg1,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(children: [
+                  Text('QR Code', style: GoogleFonts.inter(
+                    fontSize: 11, fontWeight: FontWeight.w800,
+                    color: GColors.text1)),
+                  const Spacer(),
+                  GestureDetector(
+                    onTap: () => setState(() => _qrToolOpen = false),
+                    child: const Icon(Icons.close_rounded, size: 16, color: GColors.text2),
+                  ),
+                ]),
+                const Gap(6),
+                TextField(
+                  controller: TextEditingController(text: _qrUrl),
+                  style: GoogleFonts.inter(fontSize: 13, color: GColors.text1),
+                  decoration: InputDecoration(
+                    hintText: 'https://gifteeng.com',
+                    hintStyle: GoogleFonts.inter(color: GColors.text2),
+                    filled: true, fillColor: GColors.bg2,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: const BorderSide(color: GColors.border),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  ),
+                  onChanged: (v) => _qrUrl = v,
+                ),
+                const Gap(8),
+                Row(children: [
+                  Text('Color: ', style: GoogleFonts.inter(
+                    fontSize: 11, color: GColors.text2)),
+                  GestureDetector(
+                    onTap: () async {
+                      final c = await _showColorPicker(context, _qrFgColor);
+                      if (c != null) setState(() => _qrFgColor = c);
+                    },
+                    child: Container(
+                      width: 28, height: 28,
+                      decoration: BoxDecoration(
+                        color: _qrFgColor, shape: BoxShape.circle,
+                        border: Border.all(color: GColors.border)),
+                    ),
+                  ),
+                  const Gap(8),
+                  // QR preview
+                  SizedBox(
+                    width: 48, height: 48,
+                    child: PrettyQrView.data(
+                      data: _qrUrl.isEmpty ? 'https://gifteeng.com' : _qrUrl,
+                      decoration: PrettyQrDecoration(
+                        shape: PrettyQrSmoothSymbol(color: _qrFgColor, roundFactor: 1),
+                      ),
+                    ),
+                  ),
+                  const Spacer(),
+                  GestureDetector(
+                    onTap: _addQrCode,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: GColors.brand,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text('Add to Design', style: GoogleFonts.inter(
+                        fontSize: 12, fontWeight: FontWeight.w700, color: Colors.white)),
+                    ),
+                  ),
+                ]),
+              ],
+            ),
+          ).animate().fadeIn(duration: 180.ms).slideY(begin: 0.4, end: 0),
+
+        // Main tool row
+        Container(
+          padding: EdgeInsets.fromLTRB(
+              8, 8, 8, MediaQuery.of(context).padding.bottom + 20),
+          decoration: const BoxDecoration(
+            color: GColors.bg1,
+            border: Border(top: BorderSide(color: GColors.border)),
+          ),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(children: [
+              _BottomToolIcon(icon: Icons.text_fields_rounded, label: 'Text',
+                  onTap: _addText),
+              _BottomToolIcon(icon: Icons.add_photo_alternate_outlined, label: 'Image',
+                  onTap: _addImage),
+              _BottomToolIcon(icon: Icons.interests_outlined, label: 'Shape',
+                  onTap: _addShape),
+              _BottomToolIcon(icon: Icons.qr_code_rounded, label: 'QR',
+                  active: _qrToolOpen,
+                  onTap: () => setState(() => _qrToolOpen = !_qrToolOpen)),
+              _BottomToolIcon(icon: Icons.grid_view_rounded, label: 'Templates',
+                  onTap: _openTemplates),
+            ]),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -1713,22 +2053,24 @@ class _BottomToolIcon extends StatelessWidget {
   final IconData icon;
   final String label;
   final Color? color;
+  final bool active;
   final VoidCallback onTap;
   const _BottomToolIcon({
-    required this.icon, required this.label, this.color, required this.onTap,
+    required this.icon, required this.label, this.color,
+    this.active = false, required this.onTap,
   });
   @override
   Widget build(BuildContext context) {
-    final c = color ?? GColors.text0;
+    final c = active ? GColors.brand : (color ?? GColors.text0);
     return GestureDetector(
       onTap: onTap,
       child: Container(
         margin: const EdgeInsets.symmetric(horizontal: 4),
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
-          color: GColors.bg2,
+          color: active ? GColors.brand.withValues(alpha: 0.12) : GColors.bg2,
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: GColors.border),
+          border: Border.all(color: active ? GColors.brand.withValues(alpha: 0.5) : GColors.border),
         ),
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Icon(icon, size: 18, color: c),
@@ -1736,6 +2078,29 @@ class _BottomToolIcon extends StatelessWidget {
           Text(label, style: GoogleFonts.inter(
             fontSize: 10, fontWeight: FontWeight.w700, color: c)),
         ]),
+      ),
+    );
+  }
+}
+
+/// Phase B: compact floating button for the mini selection toolbar.
+class _FloatingBtn extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final Color? color;
+  final VoidCallback onTap;
+  const _FloatingBtn({required this.icon, required this.tooltip, this.color, required this.onTap});
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          width: 36, height: 36,
+          alignment: Alignment.center,
+          child: Icon(icon, size: 16, color: color ?? Colors.white.withValues(alpha: 0.8)),
+        ),
       ),
     );
   }

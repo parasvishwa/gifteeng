@@ -8,13 +8,15 @@ import {
 import Razorpay from "razorpay";
 import * as crypto from "crypto";
 import { Prisma } from "@gifteeng/db";
-import type { CheckoutInput } from "@gifteeng/shared";
+import type { CheckoutInput, CheckoutAddons } from "@gifteeng/shared";
 import { PrismaService } from "../../prisma/prisma.service";
-import { WalletService } from "../wallet/wallet.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { RewardsService } from "../rewards/rewards.service";
 import { StickersService } from "../stickers/stickers.service";
 import { RealtimeService } from "../realtime/realtime.service";
+import { RecommendationsService } from "../recommendations/recommendations.service";
+import { OrderRoutingService } from "../order-routing/order-routing.service";
+import { CoinsService } from "../coins/coins.service";
 
 type RazorpayOrderResult = {
   id: string;
@@ -38,17 +40,53 @@ export class CheckoutService {
 
   constructor(
     private prisma: PrismaService,
-    private wallet: WalletService,
     private notifications: NotificationsService,
     private rewards: RewardsService,
     private stickers: StickersService,
     private realtime: RealtimeService,
+    private recommendations: RecommendationsService,
+    private orderRouting: OrderRoutingService,
+    private coins: CoinsService,
   ) {
     const keyId = process.env.RAZORPAY_KEY_ID;
     const keySecret = process.env.RAZORPAY_KEY_SECRET;
     if (keyId && keySecret) {
       this.razorpay = new Razorpay({ key_id: keyId, key_secret: keySecret });
     }
+  }
+
+  /**
+   * Generate a sequential order number using a Postgres sequence — replaces
+   * the legacy `GFT-<base36-timestamp>` random suffix scheme so invoice
+   * numbering reads as INV-GFT-000001, INV-GFT-000002, … in chronological
+   * order. One sequence per channel keeps B2C and B2B counters separate so
+   * the operator can track them at a glance.
+   *
+   * `tx` is the active Prisma transaction client so the sequence advances
+   * atomically with the row insert. If the migration sequence is missing
+   * (e.g. local dev without migrations applied) we fall back to the
+   * legacy random scheme so checkout never breaks.
+   */
+  private async nextOrderNumber(
+    tx: Prisma.TransactionClient,
+    channel: "b2c" | "b2b",
+  ): Promise<string> {
+    const seqName = channel === "b2c" ? "order_seq_b2c" : "order_seq_b2b";
+    try {
+      const rows = await tx.$queryRawUnsafe<Array<{ nextval: number | bigint }>>(
+        `SELECT nextval('${seqName}') AS "nextval"`,
+      );
+      const n = Number(rows?.[0]?.nextval ?? 0);
+      if (n > 0) {
+        return `GFT-${n.toString().padStart(6, "0")}`;
+      }
+    } catch (e) {
+      this.logger.warn(
+        `Sequential order-number lookup failed (${seqName}): ${(e as Error).message}; falling back to legacy random scheme.`,
+      );
+    }
+    // Fallback — keeps checkout working when the sequence isn't deployed.
+    return "GFT-" + Date.now().toString(36).toUpperCase();
   }
 
   async createRazorpayOrder(
@@ -73,27 +111,6 @@ export class CheckoutService {
     return expected === signature;
   }
 
-  async debitWalletForOrder(
-    walletId: string,
-    amount: number,
-    orderId: string,
-  ): Promise<void> {
-    // Locks wallet balance using SELECT FOR UPDATE via raw transaction for race safety.
-    await this.prisma.$transaction(async (tx) => {
-      const wallet = await tx.wallet.findUnique({ where: { id: walletId } });
-      if (!wallet) throw new Error("Wallet not found");
-      if (Number(wallet.balance) < amount) throw new Error("Insufficient wallet balance");
-
-      await tx.wallet.update({
-        where: { id: walletId },
-        data: { balance: { decrement: amount } },
-      });
-      await tx.walletTransaction.create({
-        data: { walletId, type: "debit", amount, reference: orderId },
-      });
-    });
-  }
-
   // ============================================================
   // Place-order flows
   // ============================================================
@@ -111,15 +128,15 @@ export class CheckoutService {
     const order = await this.prisma.$transaction(async (tx) => {
       const cart = await tx.cart.findUnique({
         where: { customerId },
-        include: { items: { include: { product: true } } },
+        include: { items: { include: { product: true, sellerProduct: true } } },
       });
       if (!cart || cart.items.length === 0) {
         throw new BadRequestException("Cart is empty");
       }
 
-      const totals = await this.computeTotals(tx, cart.items, input.discountCode);
+      const totals = await this.computeTotals(tx, cart.items, input.discountCode, input.addons);
 
-      const orderNumber = "GFT-" + Date.now().toString(36).toUpperCase();
+      const orderNumber = await this.nextOrderNumber(tx, "b2c");
       const created = await tx.order.create({
         data: {
           orderNumber,
@@ -137,6 +154,13 @@ export class CheckoutService {
             input.shippingAddress) as unknown as Prisma.InputJsonValue,
           discountCode: input.discountCode,
           notes: input.notes,
+          metadata: {
+            ...(input.addons ? { addons: input.addons } : {}),
+            ...(input.preferredDeliveryDate ? { preferredDeliveryDate: input.preferredDeliveryDate } : {}),
+            ...(input.removePrice ? { removePrice: true } : {}),
+            ...(input.gstin ? { gstin: input.gstin } : {}),
+            ...(input.companyName ? { companyName: input.companyName } : {}),
+          } as unknown as Prisma.InputJsonValue,
           items: {
             create: cart.items.map((ci, i) => {
               // If this item qualifies as a free gift (subtotal threshold
@@ -144,11 +168,12 @@ export class CheckoutService {
               // freeGiftOverrides keyed by array index. Use it so the
               // Order line-item price matches the grand total.
               const unitPrice = totals.freeGiftOverrides.get(i)
-                ?? new Prisma.Decimal(ci.product.basePrice);
+                ?? this.lineUnitPrice(ci);
               const totalPrice = unitPrice.times(ci.qty);
               const isFreeGiftLine = totals.freeGiftOverrides.has(i);
               return {
                 productId: ci.productId,
+                sellerProductId: ci.sellerProductId ?? null,
                 qty: ci.qty,
                 unitPrice,
                 totalPrice,
@@ -182,6 +207,49 @@ export class CheckoutService {
       this.logger.warn(`Reward consume failed for order ${order.id}: ${(e as Error).message}`);
     }
 
+    // Deduct redeemed Gifteeng Coins — fire after the transaction so the
+    // order ID is available for the CoinTransaction record. Non-fatal: if
+    // the coin ledger write fails the order still goes through and ops can
+    // reconcile manually via the admin grant endpoint.
+    const coinsToRedeem = input.addons?.coinsToRedeem ?? 0;
+    if (coinsToRedeem > 0) {
+      try {
+        await this.coins.confirmRedeem(customerId, coinsToRedeem, order.id);
+      } catch (e) {
+        this.logger.warn(`Coin deduction failed for order ${order.id}: ${(e as Error).message}`);
+      }
+    }
+
+    // Auto-award referral coins: if the order carried a referral code, credit
+    // the referrer 2500 coins (₹25) and mark the referral as claimed.
+    // Fire-and-forget — a ledger failure must never block order confirmation.
+    if (order.discountCode) {
+      void (async () => {
+        try {
+          const referral = await this.prisma.referral.findUnique({
+            where: { code: order.discountCode! },
+          });
+          if (referral && referral.status === "pending") {
+            await this.prisma.referral.update({
+              where: { id: referral.id },
+              data: {
+                refereeCustomerId: customerId,
+                status: "claimed",
+                claimedAt: new Date(),
+                rewardAmount: new Prisma.Decimal(25),
+              },
+            });
+            await this.coins.awardReferral(referral.referrerCustomerId, order.id);
+            this.logger.log(
+              `Referral ${referral.code} claimed — awarded 2500 coins to referrer ${referral.referrerCustomerId}`,
+            );
+          }
+        } catch (e) {
+          this.logger.warn(`Referral award failed for order ${order.id}: ${(e as Error).message}`);
+        }
+      })();
+    }
+
     // Award a random sticker for the Gift Collector album
     try {
       await this.stickers.awardRandom(customerId, order.id);
@@ -200,6 +268,14 @@ export class CheckoutService {
         data: { razorpayOrderId: razorpayOrder.id },
       });
       (order as { razorpayOrderId: string | null }).razorpayOrderId = razorpayOrder.id;
+    }
+
+    // Assign marketplace order items to sellers immediately for COD.
+    // Razorpay orders are assigned on payment capture instead.
+    if (input.paymentMethod === "cod") {
+      void this.orderRouting.assignOrderItems(order.id).catch((err) =>
+        this.logger.warn(`seller assignment failed for ${order.id}: ${(err as Error).message}`),
+      );
     }
 
     // For COD orders send confirmation SMS immediately; Razorpay orders are
@@ -231,114 +307,14 @@ export class CheckoutService {
     // session for this customer to refresh those scopes.
     this.realtime.publishMany(customerId, ["cart", "orders", "goins"]);
 
-    return { order, razorpayOrder };
-  }
-
-  async placeOrderB2b(
-    companyUserId: string,
-    companyId: string,
-    input: CheckoutInput,
-  ): Promise<PlaceOrderResult> {
-    if (input.paymentMethod === "razorpay") {
-      throw new BadRequestException("Razorpay is not supported for B2B orders");
-    }
-    if (input.paymentMethod === "cod") {
-      throw new BadRequestException("COD is not supported for B2B orders");
-    }
-
-    const order = await this.prisma.$transaction(async (tx) => {
-      // B2B uses per-customer carts; phase 1 uses companyUserId as the cart owner key.
-      const cart = await tx.cart.findFirst({
-        where: { customerId: companyUserId },
-        include: { items: { include: { product: true } } },
-      });
-      if (!cart || cart.items.length === 0) {
-        throw new BadRequestException("Cart is empty");
-      }
-
-      const totals = await this.computeTotals(tx, cart.items, input.discountCode);
-
-      const orderNumber = "GFT-" + Date.now().toString(36).toUpperCase();
-      const created = await tx.order.create({
-        data: {
-          orderNumber,
-          channel: "b2b",
-          companyId,
-          companyUserId,
-          subtotal: totals.subtotal,
-          discountTotal: totals.discountTotal,
-          shippingTotal: totals.shippingTotal,
-          taxTotal: totals.taxTotal,
-          grandTotal: totals.grandTotal,
-          paymentMethod: input.paymentMethod,
-          paymentStatus: "pending",
-          shippingAddress: input.shippingAddress as unknown as Prisma.InputJsonValue,
-          billingAddress: (input.billingAddress ??
-            input.shippingAddress) as unknown as Prisma.InputJsonValue,
-          discountCode: input.discountCode,
-          notes: input.notes,
-          items: {
-            create: cart.items.map((ci, i) => {
-              // If this item qualifies as a free gift (subtotal threshold
-              // met), computeTotals has placed a blended override in
-              // freeGiftOverrides keyed by array index. Use it so the
-              // Order line-item price matches the grand total.
-              const unitPrice = totals.freeGiftOverrides.get(i)
-                ?? new Prisma.Decimal(ci.product.basePrice);
-              const totalPrice = unitPrice.times(ci.qty);
-              const isFreeGiftLine = totals.freeGiftOverrides.has(i);
-              return {
-                productId: ci.productId,
-                qty: ci.qty,
-                unitPrice,
-                totalPrice,
-                variantOptions: (ci.variantOptions ?? undefined) as Prisma.InputJsonValue | undefined,
-                customization: (ci.customization ?? undefined) as Prisma.InputJsonValue | undefined,
-                snapshot: {
-                  id: ci.product.id,
-                  slug: ci.product.slug,
-                  title: ci.product.title,
-                  basePrice: ci.product.basePrice.toString(),
-                  currency: ci.product.currency,
-                  images: ci.product.images ?? null,
-                  ...(isFreeGiftLine ? { wonAsFreeGift: true, originalBasePrice: ci.product.basePrice.toString() } : {}),
-                } as unknown as Prisma.InputJsonValue,
-              };
-            }),
-          },
-        },
-        include: { items: true },
-      });
-
-      await tx.cartItem.deleteMany({ where: { cartId: cart.id } });
-
-      return created;
+    // Refresh the customer's shopper profile in the background — purchase is
+    // the strongest signal we have for what they actually want. Fire-and-forget
+    // so checkout latency stays unaffected.
+    void this.recommendations.buildProfile(customerId).catch((err) => {
+      this.logger.warn(`buildProfile post-order failed for ${customerId}: ${(err as Error).message}`);
     });
 
-    if (input.paymentMethod === "wallet") {
-      const companyWallet = await this.prisma.wallet.findFirst({
-        where: { ownerType: "company", companyId },
-      });
-      if (!companyWallet) {
-        throw new BadRequestException("Company wallet not found");
-      }
-      const amount = new Prisma.Decimal(order.grandTotal).toNumber();
-      await this.wallet.lock(companyWallet.id, amount, order.id);
-      const txn = await this.prisma.walletTransaction.findFirst({
-        where: { walletId: companyWallet.id, type: "lock", reference: order.id },
-        orderBy: { createdAt: "desc" },
-      });
-      if (txn) {
-        await this.prisma.order.update({
-          where: { id: order.id },
-          data: { walletTxnId: txn.id },
-        });
-        (order as { walletTxnId: string | null }).walletTxnId = txn.id;
-      }
-    }
-    // 'invoice' → leave pending; reconciled later.
-
-    return { order, razorpayOrder: null };
+    return { order, razorpayOrder };
   }
 
   async captureRazorpayPayment(input: {
@@ -371,6 +347,11 @@ export class CheckoutService {
 
     this.logger.log(
       `Razorpay payment captured order=${updated.orderNumber} payment=${input.razorpay_payment_id}`,
+    );
+
+    // Assign marketplace items now that payment is confirmed.
+    void this.orderRouting.assignOrderItems(updated.id).catch((err) =>
+      this.logger.warn(`seller assignment failed for ${updated.id}: ${(err as Error).message}`),
     );
 
     // Fire order confirmation SMS (non-blocking, never throws).
@@ -460,6 +441,11 @@ export class CheckoutService {
         this.logger.log(
           `Webhook payment.captured applied to order=${order.orderNumber}`,
         );
+        if (!wasAlreadyConfirmed) {
+          void this.orderRouting.assignOrderItems(order.id).catch((err) =>
+            this.logger.warn(`seller assignment (webhook) failed for ${order.id}: ${(err as Error).message}`),
+          );
+        }
         if (!wasAlreadyConfirmed && order.customerId) {
           void this.notifications
             .sendOrderStatusUpdate(order.customerId, {
@@ -506,9 +492,22 @@ export class CheckoutService {
    * Returns a Map keyed by array index → effective unit price to use, so
    * `computeTotals` + the Order creation sites stay in lock-step.
    */
+  /**
+   * Effective unit price for a cart line. Marketplace lines bought from a
+   * specific seller are billed at the seller's offer price; house-catalogue
+   * lines (no seller) fall back to the product's basePrice.
+   */
+  private lineUnitPrice(it: {
+    product: { basePrice: Prisma.Decimal };
+    sellerProduct?: { price: Prisma.Decimal } | null;
+  }): Prisma.Decimal {
+    return new Prisma.Decimal(it.sellerProduct?.price ?? it.product.basePrice);
+  }
+
   private resolveFreeGiftPricing(items: Array<{
     qty: number;
     product: { basePrice: Prisma.Decimal; metadata?: unknown; id?: string };
+    sellerProduct?: { price: Prisma.Decimal } | null;
   }>): Map<number, Prisma.Decimal> {
     const overrides = new Map<number, Prisma.Decimal>();
 
@@ -530,7 +529,7 @@ export class CheckoutService {
     for (const it of items) {
       if (giftCfg(it.product.metadata)) continue;
       subtotalWithoutGifts = subtotalWithoutGifts.plus(
-        new Prisma.Decimal(it.product.basePrice).times(it.qty),
+        this.lineUnitPrice(it).times(it.qty),
       );
     }
 
@@ -550,7 +549,7 @@ export class CheckoutService {
       if (coverQty <= 0) continue;
       const remaining = it.qty - coverQty;
       const coveredAmount = new Prisma.Decimal(cfg.shippingInr).times(coverQty);
-      const remainingAmount = new Prisma.Decimal(it.product.basePrice).times(remaining);
+      const remainingAmount = this.lineUnitPrice(it).times(remaining);
       // Store blended unit price so times(qty) reproduces the mixed total.
       // blendedUnit = (coveredAmount + remainingAmount) / qty
       const blended = coveredAmount.plus(remainingAmount).dividedBy(it.qty);
@@ -565,8 +564,10 @@ export class CheckoutService {
     items: Array<{
       qty: number;
       product: { basePrice: Prisma.Decimal; metadata?: unknown; id?: string };
+      sellerProduct?: { price: Prisma.Decimal } | null;
     }>,
     discountCode: string | undefined,
+    addons?: CheckoutAddons,
   ): Promise<{
     subtotal: Prisma.Decimal;
     discountTotal: Prisma.Decimal;
@@ -580,7 +581,7 @@ export class CheckoutService {
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       if (!it) continue;
-      const unit = freeGiftOverrides.get(i) ?? new Prisma.Decimal(it.product.basePrice);
+      const unit = freeGiftOverrides.get(i) ?? this.lineUnitPrice(it);
       subtotal = subtotal.plus(unit.times(it.qty));
     }
 
@@ -588,8 +589,16 @@ export class CheckoutService {
     if (discountCode) {
       const discount = await tx.discount.findUnique({ where: { code: discountCode } });
       if (!discount || !discount.isActive) {
-        throw new BadRequestException("Discount code is not valid");
-      }
+        // Referral codes (REF-*, GIFT-*) live in the Referral table, not
+        // Discount. They carry no monetary discount at checkout time — the
+        // referrer gets coins post-order instead. Silently skip rather than
+        // blocking the customer's purchase with a misleading error.
+        const isReferral = await tx.referral.findUnique({ where: { code: discountCode } });
+        if (!isReferral) {
+          throw new BadRequestException("Discount code is not valid");
+        }
+        // It's a valid referral code — no subtotal reduction, fall through.
+      } else {
       const now = new Date();
       if (discount.startsAt && discount.startsAt > now) {
         throw new BadRequestException("Discount code is not active yet");
@@ -621,12 +630,20 @@ export class CheckoutService {
         where: { id: discount.id },
         data: { usedCount: { increment: 1 } },
       });
-    }
+      } // end else (discount found)
+    } // end if (discountCode)
 
     const shippingTotal = new Prisma.Decimal(0);
     const taxableBase = subtotal.minus(discountTotal);
     const taxTotal = taxableBase.times(18).dividedBy(100);
-    const grandTotal = taxableBase.plus(shippingTotal).plus(taxTotal);
+
+    // Addon fees: gift wrap + thank-you card fee are charged; coin discount is deducted.
+    const giftWrapFee = new Prisma.Decimal(addons?.giftWrapPrice ?? 0);
+    const tyCardFee = new Prisma.Decimal(addons?.thankYouCardFee ?? 0);
+    const coinDiscount = new Prisma.Decimal(addons?.coinDiscountInr ?? 0);
+
+    const grandTotal = taxableBase.plus(shippingTotal).plus(taxTotal)
+      .plus(giftWrapFee).plus(tyCardFee).minus(coinDiscount);
 
     return {
       subtotal: new Prisma.Decimal(subtotal.toFixed(2)),

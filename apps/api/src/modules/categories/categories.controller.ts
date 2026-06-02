@@ -16,6 +16,8 @@ import { CategoriesService } from "./categories.service";
 import { JwtB2bGuard } from "../../common/guards/jwt-b2b.guard";
 import { RolesGuard } from "../../common/guards/roles.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
+import { PermissionsGuard, RequirePermissions } from "../auth-b2b/permissions.guard";
+import { PERMISSIONS } from "../auth-b2b/permissions";
 import { ZodValidationPipe } from "../../common/pipes/zod.pipe";
 
 const createSchema = z.object({
@@ -68,8 +70,9 @@ export class CategoriesController {
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtB2bGuard, RolesGuard)
-  @Roles("super_admin", "sales_admin")
+  @UseGuards(JwtB2bGuard, RolesGuard, PermissionsGuard)
+  @Roles("super_admin", "sales_admin", "hr_admin", "production", "employee")
+  @RequirePermissions(PERMISSIONS.CATEGORIES_CREATE)
   @Post("admin")
   create(
     @Body(new ZodValidationPipe(createSchema)) body: z.infer<typeof createSchema>,
@@ -78,8 +81,9 @@ export class CategoriesController {
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtB2bGuard, RolesGuard)
-  @Roles("super_admin", "sales_admin")
+  @UseGuards(JwtB2bGuard, RolesGuard, PermissionsGuard)
+  @Roles("super_admin", "sales_admin", "hr_admin", "production", "employee")
+  @RequirePermissions(PERMISSIONS.CATEGORIES_EDIT)
   @Patch("admin/:id")
   update(
     @Param("id") id: string,
@@ -89,8 +93,9 @@ export class CategoriesController {
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtB2bGuard, RolesGuard)
-  @Roles("super_admin", "sales_admin")
+  @UseGuards(JwtB2bGuard, RolesGuard, PermissionsGuard)
+  @Roles("super_admin", "sales_admin", "hr_admin", "production", "employee")
+  @RequirePermissions(PERMISSIONS.CATEGORIES_DELETE)
   @Delete("admin/:id")
   remove(@Param("id") id: string): Promise<unknown> {
     return this.service.remove(id);

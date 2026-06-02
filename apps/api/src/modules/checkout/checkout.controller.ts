@@ -14,16 +14,10 @@ import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import { CheckoutInputSchema } from "@gifteeng/shared";
 import type { CheckoutInput } from "@gifteeng/shared";
 import { JwtB2cGuard } from "../../common/guards/jwt-b2c.guard";
-import { JwtB2bGuard } from "../../common/guards/jwt-b2b.guard";
-import { RolesGuard } from "../../common/guards/roles.guard";
-import { Roles } from "../../common/decorators/roles.decorator";
 import { ZodValidationPipe } from "../../common/pipes/zod.pipe";
 import { CheckoutService, PlaceOrderResult } from "./checkout.service";
 
 type AuthedB2cRequest = Request & { user: { customerId: string } };
-type AuthedB2bRequest = Request & {
-  user: { companyUserId: string; companyId: string; role: string };
-};
 
 @ApiTags("checkout")
 @Controller("checkout")
@@ -40,23 +34,6 @@ export class CheckoutController {
     @Body() body: CheckoutInput,
   ): Promise<PlaceOrderResult> {
     return this.service.placeOrderB2c(req.user.customerId, body);
-  }
-
-  // ---- Place order (B2B) ----
-  @ApiBearerAuth()
-  @UseGuards(JwtB2bGuard, RolesGuard)
-  @Roles("employee", "hr_admin")
-  @Post("b2b/place")
-  @UsePipes(new ZodValidationPipe(CheckoutInputSchema))
-  placeB2b(
-    @Req() req: AuthedB2bRequest,
-    @Body() body: CheckoutInput,
-  ): Promise<PlaceOrderResult> {
-    return this.service.placeOrderB2b(
-      req.user.companyUserId,
-      req.user.companyId,
-      body,
-    );
   }
 
   // ---- Razorpay capture (client-driven) ----

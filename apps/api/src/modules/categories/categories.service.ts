@@ -125,6 +125,14 @@ export class CategoriesService {
     }));
   }
 
+  // Drop every cached `categories:list:…` key so the next public read pulls
+  // fresh data from Postgres. Without this, deletes / creates / updates
+  // looked "regenerated" on refresh because the list endpoint was still
+  // serving the 120-second-old cached payload that included the deleted row.
+  private async invalidateListCache(): Promise<void> {
+    try { await this.cache.delByPattern?.(`${CACHE_PREFIX}list:*`); } catch { /* best-effort */ }
+  }
+
   async create(input: CategoryCreateInput): Promise<unknown> {
     const row = await this.prisma.category.create({
       data: {
@@ -135,6 +143,7 @@ export class CategoriesService {
         isActive: input.is_active ?? true,
       },
     });
+    await this.invalidateListCache();
     this.realtime.publishGlobal("categories");
     return row;
   }
@@ -142,24 +151,37 @@ export class CategoriesService {
   async update(id: string, input: CategoryUpdateInput): Promise<unknown> {
     const existing = await this.prisma.category.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException("Category not found");
-    const row = await this.prisma.category.update({
-      where: { id },
-      data: {
-        ...(input.name !== undefined ? { name: input.name } : {}),
-        ...(input.image !== undefined ? { image: input.image } : {}),
-        ...(input.parent_id !== undefined ? { parentId: input.parent_id } : {}),
-        ...(input.sort_order !== undefined ? { sortOrder: input.sort_order } : {}),
-        ...(input.is_active !== undefined ? { isActive: input.is_active } : {}),
-      },
-    });
-    this.realtime.publishGlobal("categories");
-    return row;
+    try {
+      const row = await this.prisma.category.update({
+        where: { id },
+        data: {
+          ...(input.name !== undefined ? { name: input.name } : {}),
+          ...(input.image !== undefined ? { image: input.image } : {}),
+          ...(input.parent_id !== undefined ? { parentId: input.parent_id } : {}),
+          ...(input.sort_order !== undefined ? { sortOrder: input.sort_order } : {}),
+          ...(input.is_active !== undefined ? { isActive: input.is_active } : {}),
+        },
+      });
+      await this.invalidateListCache();
+      this.realtime.publishGlobal("categories");
+      return row;
+    } catch (err) {
+      // Surface Prisma / runtime errors as a 500 with a clear log line so
+      // we can debug client-reported "Couldn't move category" toasts. The
+      // most likely cause for drag-to-reparent failures is a missing
+      // realtime publish dep or a Prisma FK quirk.
+      const message = (err as Error)?.message ?? String(err);
+      // eslint-disable-next-line no-console
+      console.error(`[categories.update] id=${id} input=${JSON.stringify(input)} err=${message}`);
+      throw err;
+    }
   }
 
   async remove(id: string): Promise<unknown> {
     const existing = await this.prisma.category.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException("Category not found");
     const row = await this.prisma.category.delete({ where: { id } });
+    await this.invalidateListCache();
     this.realtime.publishGlobal("categories");
     return row;
   }

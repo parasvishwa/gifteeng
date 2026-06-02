@@ -208,6 +208,13 @@ final _addressesProvider =
 class AddressesScreen extends ConsumerWidget {
   const AddressesScreen({super.key});
 
+  /// Public entry-point so `_AddressCard` (defined later in this file) can
+  /// reopen the same modal in edit mode without duplicating the form code.
+  static void showEditSheet(
+    BuildContext context, WidgetRef ref, Map<String, dynamic> existing) {
+    _showAddOrEditSheet(context, ref, existing: existing);
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final async = ref.watch(_addressesProvider);
@@ -217,7 +224,7 @@ class AddressesScreen extends ConsumerWidget {
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: GColors.brand,
         foregroundColor: Colors.white,
-        onPressed: () => _showAddAddressSheet(context, ref),
+        onPressed: () => _showAddOrEditSheet(context, ref),
         icon: const Icon(Icons.add_rounded),
         label: Text('Add Address', style: GoogleFonts.inter(fontWeight: FontWeight.w700)),
       ),
@@ -256,13 +263,28 @@ class AddressesScreen extends ConsumerWidget {
     );
   }
 
-  void _showAddAddressSheet(BuildContext context, WidgetRef ref) {
-    final nameCtrl    = TextEditingController();
-    final phoneCtrl   = TextEditingController();
-    final line1Ctrl   = TextEditingController();
-    final cityCtrl    = TextEditingController();
-    final stateCtrl   = TextEditingController();
-    final pincodeCtrl = TextEditingController();
+  /// Unified add / edit address modal. Pass `existing` to prefill all
+  /// fields and switch the network call from POST to PATCH.
+  static void _showAddOrEditSheet(
+    BuildContext context,
+    WidgetRef ref, {
+    Map<String, dynamic>? existing,
+  }) {
+    final bool isEdit = existing != null;
+    final String editId =
+        (existing?['id'] ?? existing?['_id'] ?? '').toString();
+    final nameCtrl    = TextEditingController(
+        text: (existing?['name'] ?? existing?['fullName'] ?? '').toString());
+    final phoneCtrl   = TextEditingController(
+        text: (existing?['phone'] ?? '').toString());
+    final line1Ctrl   = TextEditingController(
+        text: (existing?['line1'] ?? '').toString());
+    final cityCtrl    = TextEditingController(
+        text: (existing?['city'] ?? '').toString());
+    final stateCtrl   = TextEditingController(
+        text: (existing?['state'] ?? '').toString());
+    final pincodeCtrl = TextEditingController(
+        text: (existing?['pincode'] ?? '').toString());
 
     showModalBottomSheet(
       context: context,
@@ -431,9 +453,10 @@ class AddressesScreen extends ConsumerWidget {
                     )),
                     const Gap(14),
                     Row(children: [
-                      Text('Add Address', style: GoogleFonts.inter(
-                        fontSize: 20, fontWeight: FontWeight.w800,
-                        color: c.text0)),
+                      Text(isEdit ? 'Edit Address' : 'Add Address',
+                          style: GoogleFonts.inter(
+                            fontSize: 20, fontWeight: FontWeight.w800,
+                            color: c.text0)),
                       const Spacer(),
                       // ── Use my location button ───────────────────────────
                       GestureDetector(
@@ -482,32 +505,52 @@ class AddressesScreen extends ConsumerWidget {
                         type: TextInputType.number, maxLen: 6),
                     const Gap(20),
                     GButton(
-                      label: 'Save Address',
+                      label: isEdit ? 'Update Address' : 'Save Address',
                       onPressed: () async {
                         final dio = ref.read(dioProvider);
+                        final payload = {
+                          // Send both keys so the server accepts the payload
+                          // whether it expects `name` (current) or `fullName` (legacy).
+                          'name':     nameCtrl.text.trim(),
+                          'fullName': nameCtrl.text.trim(),
+                          'phone':    phoneCtrl.text.trim(),
+                          'line1':    line1Ctrl.text.trim(),
+                          'city':     cityCtrl.text.trim(),
+                          'state':    stateCtrl.text.trim(),
+                          'pincode':  pincodeCtrl.text.trim(),
+                          'country':  'India',
+                        };
                         try {
-                          await dio.post('/addresses', data: {
-                            // Send both keys so the server accepts the payload
-                            // whether it expects the canonical `name` (current
-                            // backend) or legacy `fullName` (older builds).
-                            'name':     nameCtrl.text.trim(),
-                            'fullName': nameCtrl.text.trim(),
-                            'phone':    phoneCtrl.text.trim(),
-                            'line1':    line1Ctrl.text.trim(),
-                            'city':     cityCtrl.text.trim(),
-                            'state':    stateCtrl.text.trim(),
-                            'pincode':  pincodeCtrl.text.trim(),
-                            'country':  'India',
-                          });
+                          if (isEdit && editId.isNotEmpty) {
+                            // Prefer PATCH; fall back to PUT for older servers.
+                            try {
+                              await dio.patch('/addresses/$editId', data: payload);
+                            } on DioException {
+                              await dio.put('/addresses/$editId', data: payload);
+                            }
+                          } else {
+                            await dio.post('/addresses', data: payload);
+                          }
                           if (ctx.mounted) {
                             Navigator.pop(ctx);
                             ref.invalidate(_addressesProvider);
+                            ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+                              content: Text(
+                                isEdit ? 'Address updated' : 'Address saved',
+                                style: GoogleFonts.inter(fontWeight: FontWeight.w500),
+                              ),
+                              backgroundColor: GColors.emerald,
+                              behavior: SnackBarBehavior.floating,
+                              duration: const Duration(seconds: 2),
+                            ));
                           }
                         } on DioException catch (e) {
                           final msg =
                               (e.response?.data as Map?)?['message']
                                   ?.toString() ??
-                              'Could not save address';
+                              (isEdit
+                                  ? 'Could not update address'
+                                  : 'Could not save address');
                           if (ctx.mounted) {
                             ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
                               content: Text(msg),
@@ -539,11 +582,13 @@ class _AddressCard extends StatefulWidget {
 }
 
 class _AddressCardState extends State<_AddressCard> {
-  bool _deleting = false;
+  bool _deleting   = false;
+  bool _settingDef = false;
+
+  String get _id => (widget.address['id'] ?? widget.address['_id'] ?? '').toString();
 
   Future<void> _delete() async {
-    final id = (widget.address['id'] ?? widget.address['_id'] ?? '').toString();
-    if (id.isEmpty) return;
+    if (_id.isEmpty) return;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -568,11 +613,80 @@ class _AddressCardState extends State<_AddressCard> {
     setState(() => _deleting = true);
     try {
       final dio = widget.ref.read(dioProvider);
-      await dio.delete('/addresses/$id');
+      await dio.delete('/addresses/$_id');
       widget.ref.invalidate(_addressesProvider);
-    } catch (_) {
-      if (mounted) setState(() => _deleting = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Address removed',
+              style: GoogleFonts.inter(fontWeight: FontWeight.w500)),
+          backgroundColor: GColors.emerald,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 2),
+        ));
+      }
+    } on DioException catch (e) {
+      final msg = (e.response?.data as Map?)?['message']?.toString() ??
+          'Could not remove address';
+      if (mounted) {
+        setState(() => _deleting = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(msg, style: GoogleFonts.inter(fontWeight: FontWeight.w500)),
+          backgroundColor: GColors.rose,
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _deleting = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Could not remove address: $e',
+              style: GoogleFonts.inter(fontWeight: FontWeight.w500)),
+          backgroundColor: GColors.rose,
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
     }
+  }
+
+  Future<void> _setDefault() async {
+    if (_id.isEmpty) return;
+    setState(() => _settingDef = true);
+    try {
+      final dio = widget.ref.read(dioProvider);
+      // PATCH first (REST-ful); some backends use POST /addresses/:id/default
+      try {
+        await dio.patch('/addresses/$_id', data: {'isDefault': true});
+      } on DioException {
+        // Fallback: dedicated default endpoint
+        await dio.post('/addresses/$_id/default');
+      }
+      widget.ref.invalidate(_addressesProvider);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Set as default address',
+              style: GoogleFonts.inter(fontWeight: FontWeight.w500)),
+          backgroundColor: GColors.emerald,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 2),
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Could not set as default',
+              style: GoogleFonts.inter(fontWeight: FontWeight.w500)),
+          backgroundColor: GColors.rose,
+          behavior: SnackBarBehavior.floating,
+        ));
+      }
+    } finally {
+      if (mounted) setState(() => _settingDef = false);
+    }
+  }
+
+  void _edit() {
+    // Reuse the same sheet builder, prefilled with this address.
+    AddressesScreen.showEditSheet(context, widget.ref, widget.address);
   }
 
   @override
@@ -600,6 +714,7 @@ class _AddressCardState extends State<_AddressCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // ── Name + Default badge ───────────────────────────────────────
           Row(children: [
             Expanded(child: Text(name, style: GoogleFonts.inter(
               fontSize: 14, fontWeight: FontWeight.w700, color: GColors.of(context).text0))),
@@ -617,30 +732,6 @@ class _AddressCardState extends State<_AddressCard> {
                   letterSpacing: 0.5,
                 )),
               ),
-            const Gap(6),
-            // ── Delete button ────────────────────────────────────────────
-            GestureDetector(
-              onTap: _deleting ? null : _delete,
-              child: AnimatedOpacity(
-                opacity: _deleting ? 0.4 : 1.0,
-                duration: const Duration(milliseconds: 150),
-                child: Container(
-                  width: 28, height: 28,
-                  decoration: BoxDecoration(
-                    color: GColors.rose.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: GColors.rose.withValues(alpha: 0.2)),
-                  ),
-                  child: _deleting
-                      ? const Padding(
-                          padding: EdgeInsets.all(7),
-                          child: CircularProgressIndicator(
-                              strokeWidth: 2, color: GColors.rose))
-                      : const Icon(Icons.delete_outline_rounded,
-                          size: 16, color: GColors.rose),
-                ),
-              ),
-            ),
           ]),
           const Gap(6),
           Text(phone, style: GoogleFonts.inter(fontSize: 12, color: GColors.of(context).text1)),
@@ -649,7 +740,83 @@ class _AddressCardState extends State<_AddressCard> {
             [line1, line2, city, state, pincode].where((s) => s.isNotEmpty).join(', '),
             style: GoogleFonts.inter(fontSize: 12, color: GColors.of(context).text1, height: 1.5),
           ),
+
+          // ── Action row ─────────────────────────────────────────────────
+          const Gap(12),
+          const Divider(height: 1),
+          const Gap(10),
+          Row(children: [
+            _AddressActionButton(
+              icon: Icons.edit_outlined,
+              label: 'Edit',
+              onTap: _edit,
+            ),
+            const Gap(8),
+            if (!isDefault)
+              _AddressActionButton(
+                icon: Icons.star_border_rounded,
+                label: 'Set Default',
+                onTap: _settingDef ? null : _setDefault,
+                loading: _settingDef,
+              ),
+            const Spacer(),
+            _AddressActionButton(
+              icon: Icons.delete_outline_rounded,
+              label: 'Delete',
+              onTap: _deleting ? null : _delete,
+              loading: _deleting,
+              danger: true,
+            ),
+          ]),
         ],
+      ),
+    );
+  }
+}
+
+/// Single action button used in the address-card action row.
+class _AddressActionButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback? onTap;
+  final bool loading;
+  final bool danger;
+  const _AddressActionButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.loading = false,
+    this.danger  = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final c     = GColors.of(context);
+    final color = danger ? GColors.rose : c.text1;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withValues(alpha: 0.2)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (loading)
+              SizedBox(
+                width: 13, height: 13,
+                child: CircularProgressIndicator(strokeWidth: 2, color: color),
+              )
+            else
+              Icon(icon, size: 14, color: color),
+            const Gap(5),
+            Text(label, style: GoogleFonts.inter(
+              fontSize: 11, fontWeight: FontWeight.w700, color: color)),
+          ],
+        ),
       ),
     );
   }

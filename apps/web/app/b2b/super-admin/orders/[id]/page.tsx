@@ -45,6 +45,7 @@ type OrderItem = {
   sku?: string;
   variantOptions?: Record<string, string> | null;
   snapshot?: { title?: string; images?: any; sku?: string } | null;
+  customization?: Record<string, unknown> | null;
 };
 
 type Shipment = {
@@ -210,6 +211,65 @@ function CopyText({ value, label }: { value: string; label?: string }) {
       {label ?? value}
       {copied && <span className="ml-2 text-[10px] text-emerald-600">copied</span>}
     </button>
+  );
+}
+
+// ── Print File Button ────────────────────────────────────────────────────
+
+function PrintFileButton({ orderId, itemIndex }: { orderId: string; itemIndex: number }) {
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{ url: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleGenerate() {
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    try {
+      const data = await apiB2b().post<{ url: string }>(
+        `/api/production/render`,
+        { orderId, itemIndex },
+      );
+      setResult(data);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Unknown error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="mt-2">
+      <button
+        onClick={handleGenerate}
+        disabled={loading}
+        className="inline-flex items-center gap-1.5 rounded border border-border bg-muted px-3 py-1.5 text-xs font-medium hover:bg-accent disabled:opacity-50 transition-colors"
+      >
+        {loading ? "Generating…" : "Generate Print File"}
+      </button>
+      {error && (
+        <p className="mt-1 text-xs text-rose-600">Error: {error}</p>
+      )}
+      {result?.url && (
+        <div className="mt-2 flex items-center gap-3">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={result.url}
+            alt="Print preview"
+            className="h-16 w-16 rounded border object-cover"
+          />
+          <a
+            href={result.url}
+            download
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-primary underline hover:no-underline"
+          >
+            Download PNG ↗
+          </a>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -542,7 +602,7 @@ export default function SuperAdminOrderDetailPage() {
               <div className="text-xs text-muted-foreground">{items.length} item{items.length === 1 ? "" : "s"}</div>
             </div>
             <ul className="divide-y">
-              {items.map(it => {
+              {items.map((it, idx) => {
                 const title = it.title ?? it.snapshot?.title ?? "—";
                 const qty   = it.qty ?? it.quantity ?? 1;
                 const unit  = num(it.unitPrice);
@@ -550,19 +610,25 @@ export default function SuperAdminOrderDetailPage() {
                 const variants = it.variantOptions
                   ? Object.entries(it.variantOptions).map(([k, v]) => `${k}: ${v}`).join(" · ")
                   : null;
+                const hasCustomization = !!it.customization;
                 return (
-                  <li key={it.id} className="flex items-center gap-3 px-4 py-3">
-                    <div className="size-12 shrink-0 overflow-hidden rounded border bg-muted">
-                      {it.image ? <img src={it.image} alt="" className="h-full w-full object-cover" /> : null}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="truncate text-sm font-medium">{title}</div>
-                      {variants && <div className="truncate text-xs text-muted-foreground">{variants}</div>}
-                      {it.sku && <div className="text-xs text-muted-foreground">SKU: {it.sku}</div>}
-                    </div>
-                    <div className="text-right text-sm">
-                      <div>{money(unit, currency)} × {qty}</div>
-                      <div className="font-semibold">{money(total, currency)}</div>
+                  <li key={it.id} className="px-4 py-3">
+                    <div className="flex items-center gap-3">
+                      <div className="size-12 shrink-0 overflow-hidden rounded border bg-muted">
+                        {it.image ? <img src={it.image} alt="" className="h-full w-full object-cover" /> : null}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="truncate text-sm font-medium">{title}</div>
+                        {variants && <div className="truncate text-xs text-muted-foreground">{variants}</div>}
+                        {it.sku && <div className="text-xs text-muted-foreground">SKU: {it.sku}</div>}
+                        {hasCustomization && (
+                          <PrintFileButton orderId={order.id} itemIndex={idx} />
+                        )}
+                      </div>
+                      <div className="text-right text-sm">
+                        <div>{money(unit, currency)} × {qty}</div>
+                        <div className="font-semibold">{money(total, currency)}</div>
+                      </div>
                     </div>
                   </li>
                 );

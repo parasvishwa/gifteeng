@@ -7,6 +7,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/api/api_client.dart';
 import '../../../../core/api/biometric_service.dart';
+import '../../../../core/services/location_service.dart';
 
 class SplashScreen extends ConsumerStatefulWidget {
   const SplashScreen({super.key});
@@ -19,6 +20,34 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
   @override
   void initState() {
     super.initState();
+    // Kick off location resolution while the splash screen is animating
+    // so the same-day-delivery badge has data ready by the time the
+    // home/shop screen mounts. The notifier auto-resolves on first read.
+    ref.read(userDeliveryProvider);
+    // Fast-path: if storage has no token, skip the brand splash entirely
+    // and go straight to /auth. Used after a sign-out (SystemNavigator.pop
+    // closes the app; the user reopens; we shouldn't make them wait 1.8s
+    // when their next action is to log back in).
+    _fastPathOrSplash();
+  }
+
+  Future<void> _fastPathOrSplash() async {
+    // Check the auth token directly from storage (faster than awaiting
+    // the provider's build()). If absent (and not guest) → go to /auth
+    // in 200ms; if guest → straight to /.
+    try {
+      final token = await ref
+          .read(authTokenNotifierProvider.future)
+          .timeout(const Duration(milliseconds: 300), onTimeout: () => null);
+      final isGuest = await ref
+          .read(guestModeNotifierProvider.future)
+          .timeout(const Duration(milliseconds: 300), onTimeout: () => false);
+      if ((token == null || isGuest) && mounted) {
+        // Fast-path: skip the brand-splash dwell.
+        Future.delayed(const Duration(milliseconds: 200), _navigate);
+        return;
+      }
+    } catch (_) { /* fall through to normal splash */ }
     Future.delayed(const Duration(milliseconds: 1800), _navigate);
   }
 
@@ -27,9 +56,16 @@ class _SplashScreenState extends ConsumerState<SplashScreen> {
 
     final token   = ref.read(authTokenNotifierProvider).valueOrNull;
     final bioSvc  = ref.read(biometricServiceProvider);
+    final isGuest = ref.read(guestModeNotifierProvider).valueOrNull ?? false;
 
     if (token == null) {
-      // No token — go to auth.
+      // No token — but if they previously chose guest browsing, honor that
+      // and drop them into the shell. Apple App Store Review Guideline
+      // 5.1.1(v) requires not gating browsing behind a login wall.
+      if (isGuest) {
+        if (mounted) context.go('/');
+        return;
+      }
       if (mounted) context.go('/auth');
       return;
     }

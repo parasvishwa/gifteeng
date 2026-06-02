@@ -37,7 +37,7 @@ function openPrint(html: string, title: string) {
   body { font-family: -apple-system, system-ui, Segoe UI, Roboto, sans-serif; margin: 0; padding: 24px; color: #111; background: #fff; }
   h1 { font-size: 20px; margin: 0 0 12px; }
   h2 { font-size: 14px; margin: 0 0 6px; text-transform: uppercase; letter-spacing: 0.12em; color: #666; }
-  .brand { font-size: 26px; font-weight: 900; background: linear-gradient(135deg,#ec4899,#a855f7); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .brand { font-size: 26px; font-weight: 900; color: #EF3752; letter-spacing: -0.01em; }
   .row { display: flex; justify-content: space-between; gap: 16px; }
   .card { border: 1px solid #ddd; border-radius: 8px; padding: 12px; margin-top: 10px; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -689,13 +689,21 @@ function SummaryCards({ orders, activeSummaryFilter, onFilter }: { orders: Order
     return d.toDateString() === now.toDateString();
   }).length;
 
+  // Color discipline: only the three URGENCY tiers carry hue, and they form
+  // one coherent red → orange → amber severity ramp (color = meaning here).
+  // The three operational counts (Active, Customized, Today's) are neutral —
+  // they're metrics, not alerts, so they shouldn't shout. Selection feedback
+  // on the neutral cards uses the brand accent (the one accent the restrained
+  // palette allows). This kills the previous 6-hue rainbow.
+  const NEUTRAL = "bg-muted/40 border-border/70 text-foreground";
+  const NEUTRAL_ACTIVE = "bg-primary/5 border-primary/40 ring-2 ring-primary/25 text-foreground";
   const cards: { key: SummaryFilterKey; label: string; value: number; color: string; activeColor: string; icon: React.ElementType }[] = [
-    { key: "overdue", label: "Overdue (>48h)", value: overdue, color: "bg-red-50 border-red-200 text-red-700 dark:bg-red-950/30 dark:border-red-800", activeColor: "bg-red-200 border-red-400 ring-2 ring-red-400 dark:bg-red-900/50 dark:border-red-600", icon: Flame },
-    { key: "urgent", label: "Ship Today", value: urgent, color: "bg-orange-50 border-orange-200 text-orange-700 dark:bg-orange-950/30 dark:border-orange-800", activeColor: "bg-orange-200 border-orange-400 ring-2 ring-orange-400 dark:bg-orange-900/50 dark:border-orange-600", icon: AlertTriangle },
-    { key: "today", label: "Ship Tomorrow", value: shipToday, color: "bg-yellow-50 border-yellow-200 text-yellow-700 dark:bg-yellow-950/30 dark:border-yellow-800", activeColor: "bg-yellow-200 border-yellow-400 ring-2 ring-yellow-400 dark:bg-yellow-900/50 dark:border-yellow-600", icon: Timer },
-    { key: "active", label: "Active Orders", value: active.length, color: "bg-blue-50 border-blue-200 text-blue-700 dark:bg-blue-950/30 dark:border-blue-800", activeColor: "bg-blue-200 border-blue-400 ring-2 ring-blue-400 dark:bg-blue-900/50 dark:border-blue-600", icon: Package },
-    { key: "customized", label: "Customized", value: customized, color: "bg-purple-50 border-purple-200 text-purple-700 dark:bg-purple-950/30 dark:border-purple-800", activeColor: "bg-purple-200 border-purple-400 ring-2 ring-purple-400 dark:bg-purple-900/50 dark:border-purple-600", icon: Paintbrush },
-    { key: "todays_orders", label: "Today's Orders", value: todayOrders, color: "bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-950/30 dark:border-emerald-800", activeColor: "bg-emerald-200 border-emerald-400 ring-2 ring-emerald-400 dark:bg-emerald-900/50 dark:border-emerald-600", icon: CalendarDays },
+    { key: "overdue", label: "Overdue (>48h)", value: overdue, color: "bg-red-50 border-red-200 text-red-700 dark:bg-red-950/30 dark:border-red-800", activeColor: "bg-red-100 border-red-400 ring-2 ring-red-400/60 text-red-800 dark:bg-red-900/50 dark:border-red-600", icon: Flame },
+    { key: "urgent", label: "Ship Today", value: urgent, color: "bg-orange-50 border-orange-200 text-orange-700 dark:bg-orange-950/30 dark:border-orange-800", activeColor: "bg-orange-100 border-orange-400 ring-2 ring-orange-400/60 text-orange-800 dark:bg-orange-900/50 dark:border-orange-600", icon: AlertTriangle },
+    { key: "today", label: "Ship Tomorrow", value: shipToday, color: "bg-amber-50 border-amber-200 text-amber-700 dark:bg-amber-950/30 dark:border-amber-800", activeColor: "bg-amber-100 border-amber-400 ring-2 ring-amber-400/60 text-amber-800 dark:bg-amber-900/50 dark:border-amber-600", icon: Timer },
+    { key: "active", label: "Active Orders", value: active.length, color: NEUTRAL, activeColor: NEUTRAL_ACTIVE, icon: Package },
+    { key: "customized", label: "Customized", value: customized, color: NEUTRAL, activeColor: NEUTRAL_ACTIVE, icon: Paintbrush },
+    { key: "todays_orders", label: "Today's Orders", value: todayOrders, color: NEUTRAL, activeColor: NEUTRAL_ACTIVE, icon: CalendarDays },
   ];
 
   return (
@@ -705,10 +713,10 @@ function SummaryCards({ orders, activeSummaryFilter, onFilter }: { orders: Order
         const isActive = activeSummaryFilter === c.key;
         return (
           <button key={c.key} onClick={() => onFilter(isActive ? null : c.key)}
-            className={`rounded-xl border p-2.5 text-center transition-all cursor-pointer hover:scale-[1.03] ${isActive ? c.activeColor : c.color} ${isActive ? "shadow-md" : "hover:shadow-sm"}`}>
-            <Icon className="w-4 h-4 mx-auto mb-1 opacity-70" />
-            <p className="text-xl font-bold leading-none">{c.value}</p>
-            <p className="text-[9px] font-medium mt-1 opacity-80">{c.label}</p>
+            className={`rounded-xl border p-2.5 text-center cursor-pointer transition-[transform,box-shadow,background-color,border-color] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] active:scale-[0.97] [@media(hover:hover)]:hover:-translate-y-0.5 ${isActive ? c.activeColor : c.color} ${isActive ? "shadow-md" : "hover:shadow-sm"}`}>
+            <Icon className="w-4 h-4 mx-auto mb-1 opacity-60" />
+            <p className="text-xl font-black leading-none tabular-nums">{c.value}</p>
+            <p className="text-[9px] font-semibold uppercase tracking-wide mt-1 opacity-70">{c.label}</p>
           </button>
         );
       })}
@@ -1318,18 +1326,24 @@ export default function AdminOrders() {
             const cfg = STATUS_CFG[order.status] || STATUS_CFG.pending;
             const Icon = cfg.icon;
             const urgencyLabel = getUrgencyLabel(order._urgency);
+            // Urgency signalling: a FULL tinted border (+ faint background
+            // wash for the two critical tiers) rather than a colored
+            // `border-l-4` side-stripe. The stripe was a decorative accent
+            // that fought the row's leading status icon; a full border reads
+            // as "this whole row is flagged" and the existing UrgencyBanner
+            // pill inside the row already carries the explicit label.
             const borderClass = order._urgency === "overdue"
-              ? "border-red-400 dark:border-red-700 border-l-4"
+              ? "border-red-300 bg-red-50/60 dark:border-red-800/70 dark:bg-red-950/20"
               : order._urgency === "urgent"
-                ? "border-orange-400 dark:border-orange-700 border-l-4"
+                ? "border-orange-300 bg-orange-50/50 dark:border-orange-800/70 dark:bg-orange-950/20"
                 : order._urgency === "today"
-                  ? "border-yellow-400 dark:border-yellow-700 border-l-4"
+                  ? "border-amber-200 dark:border-amber-800/60"
                   : "border-border/40";
             const tags = orderTagsMap[order.id] || [];
 
             return (
               <div key={order.id} onClick={() => openDetail(order)}
-                className={`bg-card rounded-xl border p-3 flex items-center gap-3 hover:shadow-sm transition-shadow cursor-pointer group ${borderClass}`}>
+                className={`bg-card rounded-xl border p-3 flex items-center gap-3 cursor-pointer group transition-[box-shadow,background-color] duration-150 hover:shadow-[0_4px_16px_-4px_hsl(230_20%_0%/0.14),0_2px_8px_-2px_hsl(230_20%_0%/0.10)] active:bg-muted/30 ${borderClass}`}>
                 <Checkbox
                   checked={printQueueIds.has(order.id)}
                   onCheckedChange={(checked) => {

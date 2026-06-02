@@ -16,12 +16,39 @@ async function safeGet<T>(path: string, fallback: T): Promise<T> {
   } catch { return fallback; }
 }
 
+// Normalised shape this component renders against.
 interface AdminUser {
-  user_id: string;
-  roles: string[];
+  id: string;
+  role: string;
   email: string;
   phone: string;
-  full_name: string;
+  fullName: string;
+}
+
+// Raw API row from GET /companies/me/employees — Prisma camelCase, single
+// `role` string. Earlier this component assumed `user_id` + `roles[]` +
+// `full_name`, which made `admin.roles.includes(...)` throw
+// "Cannot read properties of undefined" and crashed the whole Settings page.
+interface ApiEmployeeRow {
+  id?: string;
+  user_id?: string;
+  role?: string;
+  roles?: string[];
+  email?: string;
+  phone?: string;
+  fullName?: string;
+  full_name?: string;
+}
+
+function normaliseEmployee(r: ApiEmployeeRow): AdminUser {
+  return {
+    id:       r.id ?? r.user_id ?? "",
+    // Accept either `role` (current API) or first of `roles[]` (legacy).
+    role:     r.role ?? (Array.isArray(r.roles) ? r.roles[0] ?? "" : ""),
+    email:    r.email ?? "",
+    phone:    r.phone ?? "",
+    fullName: r.fullName ?? r.full_name ?? "",
+  };
 }
 
 export default function AdminUsersTab() {
@@ -34,9 +61,8 @@ export default function AdminUsersTab() {
 
   const fetchAdmins = async () => {
     setLoading(true);
-    // TODO: wire to /api/companies/me/employees
-    const data = await safeGet<AdminUser[]>("/companies/me/employees", []);
-    setAdmins(data || []);
+    const data = await safeGet<ApiEmployeeRow[]>("/companies/me/employees", []);
+    setAdmins(Array.isArray(data) ? data.map(normaliseEmployee) : []);
     setLoading(false);
   };
 
@@ -100,21 +126,26 @@ export default function AdminUsersTab() {
           <p className="text-xs text-muted-foreground text-center py-8">No admins found</p>
         )}
         {admins.map(admin => {
-          const isSuperAdmin = admin.roles.includes("super_admin");
+          const isSuperAdmin = admin.role === "super_admin";
+          // Pretty-print the role string (e.g. "hr_admin" → "Hr Admin").
+          const roleLabel = admin.role
+            ? admin.role
+                .split("_")
+                .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+                .join(" ")
+            : "Admin";
           return (
-            <div key={admin.user_id} className="flex items-center justify-between px-4 py-3">
+            <div key={admin.id} className="flex items-center justify-between px-4 py-3">
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <p className="text-xs font-medium truncate">{admin.full_name || "No name"}</p>
-                  {admin.roles.map(role => (
-                    <span key={role} className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-full ${
-                      role === "super_admin"
-                        ? "bg-primary/15 text-primary"
-                        : "bg-muted text-muted-foreground"
-                    }`}>
-                      {role === "super_admin" ? "Super Admin" : "Admin"}
-                    </span>
-                  ))}
+                  <p className="text-xs font-medium truncate">{admin.fullName || "No name"}</p>
+                  <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded-full ${
+                    isSuperAdmin
+                      ? "bg-primary/15 text-primary"
+                      : "bg-muted text-muted-foreground"
+                  }`}>
+                    {roleLabel}
+                  </span>
                 </div>
                 <p className="text-[10px] text-muted-foreground truncate">
                   {admin.email}{admin.email && admin.phone ? " · " : ""}{admin.phone}
@@ -124,11 +155,11 @@ export default function AdminUsersTab() {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => removeAdmin(admin.user_id)}
-                  disabled={removingId === admin.user_id}
+                  onClick={() => removeAdmin(admin.id)}
+                  disabled={removingId === admin.id}
                   className="text-destructive/70 hover:text-destructive hover:bg-destructive/10 h-7 px-2"
                 >
-                  {removingId === admin.user_id
+                  {removingId === admin.id
                     ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
                     : <Trash2 className="w-3.5 h-3.5" />
                   }

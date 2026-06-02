@@ -6,7 +6,7 @@ part of 'api_client.dart';
 // RiverpodGenerator
 // **************************************************************************
 
-String _$secureStorageHash() => r'd236803f715ed93447aac62dad02fd72721571b1';
+String _$secureStorageHash() => r'3b782d26fcac9f6de4f10bf028507f9eb4341cac';
 
 /// See also [secureStorage].
 @ProviderFor(secureStorage)
@@ -24,7 +24,7 @@ final secureStorageProvider =
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef SecureStorageRef = AutoDisposeProviderRef<FlutterSecureStorage>;
-String _$dioHash() => r'65d093d571e84b453c3987045ae8981ad5a91573';
+String _$dioHash() => r'0cf21b6bd90d8316536f7770039187f65360c827';
 
 /// See also [dio].
 @ProviderFor(dio)
@@ -40,7 +40,7 @@ final dioProvider = AutoDisposeProvider<Dio>.internal(
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
 typedef DioRef = AutoDisposeProviderRef<Dio>;
-String _$authTokenNotifierHash() => r'1c3e63f717e2ec36f27a77bbdf8d25a68db6d197';
+String _$authTokenNotifierHash() => r'86fd11fcc47439a8220ff2e210d5219a3021ef83';
 
 /// See also [AuthTokenNotifier].
 @ProviderFor(AuthTokenNotifier)
@@ -56,6 +56,22 @@ final authTokenNotifierProvider =
 );
 
 typedef _$AuthTokenNotifier = AutoDisposeAsyncNotifier<String?>;
+String _$guestModeNotifierHash() => r'98206103b9e3b4c1f31a2d68405f083c7411abf8';
+
+/// See also [GuestModeNotifier].
+@ProviderFor(GuestModeNotifier)
+final guestModeNotifierProvider =
+    AutoDisposeAsyncNotifierProvider<GuestModeNotifier, bool>.internal(
+  GuestModeNotifier.new,
+  name: r'guestModeNotifierProvider',
+  debugGetCreateSourceHash: const bool.fromEnvironment('dart.vm.product')
+      ? null
+      : _$guestModeNotifierHash,
+  dependencies: null,
+  allTransitiveDependencies: null,
+);
+
+typedef _$GuestModeNotifier = AutoDisposeAsyncNotifier<bool>;
 String _$biometricPrefNotifierHash() =>
     r'acadcaf132e105a55ed243da4fff46c23fecf567';
 

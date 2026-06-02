@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Pencil, Trash2, X, Save, Loader2, Sparkles, Plus, Check, Brain, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Pencil, Trash2, X, Save, Loader2, Sparkles, Plus, Check, Brain, AlertTriangle, CheckCircle2, Package } from "lucide-react";
 import { apiB2b, API_BASE_URL } from "@/lib/api";
 
 const AI_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
@@ -1630,30 +1630,43 @@ export default function SuperAdminProductsPage() {
       )}
 
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold">Products</h1>
-            <p className="text-sm text-muted-foreground">
-              Shared catalog powering both B2C and B2B channels.
-            </p>
+        {/* Header matches the icon-chip pattern used by the Orders and
+            Categories admin pages — previously this page used a bare
+            text-2xl h1, which read as a different page family. */}
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+              <Package className="w-5 h-5 text-primary" />
+            </div>
+            <div>
+              <h1 className="text-lg font-display font-bold tracking-tight">Products</h1>
+              <p className="text-xs text-muted-foreground">
+                Shared catalog powering both B2C and B2B channels.
+              </p>
+            </div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Link
               href="/super-admin/products/import"
-              className="rounded-md border px-3 py-1.5 text-sm hover:bg-muted"
+              className="flex items-center rounded-md border border-border px-3 py-1.5 text-sm font-medium text-foreground/80 transition-colors hover:bg-muted active:scale-[0.97]"
             >
               Import
             </Link>
+            {/* AI Inventory Alert + Bulk AI Writer are both AI tools — they
+                now share one visual treatment (primary-tinted, Sparkles
+                family) so they read as siblings. The previous amber styling
+                also brushed against the DESIGN.md rule reserving gold/amber
+                for coins & rewards UI only. */}
             <button
               onClick={() => setShowInventoryAlert(true)}
-              className="flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-3 py-1.5 text-sm font-medium text-amber-700 hover:bg-amber-100 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-400"
+              className="flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/5 px-3 py-1.5 text-sm font-medium text-primary transition-colors hover:bg-primary/10 active:scale-[0.97]"
             >
               <Brain className="h-4 w-4" />
               AI Inventory Alert
             </button>
             <button
               onClick={() => setShowBulkAiModal(true)}
-              className="flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/5 px-3 py-1.5 text-sm font-medium text-primary hover:bg-primary/10"
+              className="flex items-center gap-1.5 rounded-md border border-primary/30 bg-primary/5 px-3 py-1.5 text-sm font-medium text-primary transition-colors hover:bg-primary/10 active:scale-[0.97]"
             >
               <Sparkles className="h-4 w-4" />
               Bulk AI Writer
@@ -1663,7 +1676,7 @@ export default function SuperAdminProductsPage() {
                 cramped quick-create modal. */}
             <Link
               href="/b2b/super-admin/products/new"
-              className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:opacity-90"
+              className="flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-semibold text-primary-foreground shadow-sm transition-[opacity,transform] hover:opacity-90 active:scale-[0.97]"
             >
               <Plus className="h-4 w-4" />
               New product
@@ -1695,7 +1708,7 @@ export default function SuperAdminProductsPage() {
               if (e.key === "Enter") { setPage(1); load(); }
             }}
             placeholder="Search products..."
-            className="w-64 rounded-md border bg-background px-3 py-1.5 text-sm"
+            className="w-64 rounded-md border border-border bg-background px-3 py-1.5 text-sm transition-colors focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
           />
           <input
             value={category}
@@ -1704,7 +1717,7 @@ export default function SuperAdminProductsPage() {
               if (e.key === "Enter") { setPage(1); load(); }
             }}
             placeholder="Category"
-            className="w-48 rounded-md border bg-background px-3 py-1.5 text-sm"
+            className="w-48 rounded-md border border-border bg-background px-3 py-1.5 text-sm transition-colors focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
           />
         </div>
 
@@ -1835,9 +1848,12 @@ export default function SuperAdminProductsPage() {
 
         <div className="overflow-x-auto rounded-md border">
           <table className="w-full text-sm min-w-[700px]">
-            <thead className="bg-muted/50">
+            {/* Column headers as micro-labels (uppercase, 10px, tracked) —
+                matches the DESIGN.md micro-label spec and keeps the header
+                row visually subordinate to the data rows. */}
+            <thead className="bg-muted/50 [&_th]:px-4 [&_th]:py-2.5 [&_th]:text-[10px] [&_th]:font-bold [&_th]:uppercase [&_th]:tracking-[0.08em] [&_th]:text-muted-foreground">
               <tr>
-                <th className="px-3 py-2 text-center w-8">
+                <th className="!px-3 text-center w-8">
                   <input
                     type="checkbox"
                     aria-label="Select all"
@@ -1846,26 +1862,34 @@ export default function SuperAdminProductsPage() {
                     onChange={(e) => setSelectedIds(e.target.checked ? new Set(products.map((p) => p.id)) : new Set())}
                   />
                 </th>
-                <th className="px-4 py-2 text-left">Product</th>
-                <th className="px-4 py-2 text-left">Category</th>
-                <th className="px-4 py-2 text-right">Price</th>
-                <th className="px-4 py-2 text-right">Inventory</th>
-                <th className="px-4 py-2 text-center">B2C</th>
-                <th className="px-4 py-2 text-center">B2B</th>
-                <th className="px-4 py-2 text-center">Actions</th>
+                <th className="text-left">Product</th>
+                <th className="text-left">Category</th>
+                <th className="text-right">Price</th>
+                <th className="text-right">Inventory</th>
+                <th className="text-center">B2C</th>
+                <th className="text-center">B2B</th>
+                <th className="text-center">Actions</th>
               </tr>
             </thead>
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-6 text-center text-muted-foreground">
-                    Loading...
+                  <td colSpan={8} className="px-4 py-14 text-center">
+                    <Loader2 className="w-5 h-5 animate-spin text-muted-foreground/60 mx-auto" />
                   </td>
                 </tr>
               ) : products.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="px-4 py-6 text-center text-muted-foreground">
-                    No products found.
+                  <td colSpan={8} className="px-4 py-14 text-center">
+                    <Package className="w-9 h-9 text-muted-foreground/20 mx-auto mb-2" />
+                    <p className="text-sm font-medium text-foreground">
+                      {search || category ? "No products match your filters" : "No products yet"}
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {search || category
+                        ? "Try a different search term or category."
+                        : "Add your first product to start the catalog."}
+                    </p>
                   </td>
                 </tr>
               ) : (
@@ -1873,7 +1897,7 @@ export default function SuperAdminProductsPage() {
                   const thumb = extractThumb(p);
                   const isSelected = selectedIds.has(p.id);
                   return (
-                    <tr key={p.id} className={cn("border-t hover:bg-muted/30", isSelected && "bg-primary/5")}>
+                    <tr key={p.id} className={cn("border-t border-border/60 transition-colors duration-150 hover:bg-muted/40", isSelected && "bg-primary/5 hover:bg-primary/[0.07]")}>
                       <td className="px-3 py-2 text-center">
                         <input
                           type="checkbox"
@@ -1986,14 +2010,14 @@ export default function SuperAdminProductsPage() {
             <button
               onClick={() => setPage((p) => Math.max(1, p - 1))}
               disabled={page === 1}
-              className="rounded-md border px-3 py-1 disabled:opacity-50"
+              className="rounded-md border border-border px-3 py-1 font-medium transition-colors hover:bg-muted active:scale-[0.97] disabled:opacity-40 disabled:pointer-events-none"
             >
               Prev
             </button>
             <button
               onClick={() => setPage((p) => p + 1)}
               disabled={products.length < pageSize}
-              className="rounded-md border px-3 py-1 disabled:opacity-50"
+              className="rounded-md border border-border px-3 py-1 font-medium transition-colors hover:bg-muted active:scale-[0.97] disabled:opacity-40 disabled:pointer-events-none"
             >
               Next
             </button>

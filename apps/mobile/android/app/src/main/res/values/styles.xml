@@ -11,8 +11,13 @@
          Flutter UI initializes, as well as behind your Flutter UI while its
          running.
 
-         This Theme is only used starting with V2 of Flutter's Android embedding. -->
+         IMPORTANT: windowBackground is explicitly WHITE (not the theme's
+         default colorBackground). During any route transition where Flutter
+         has a 1–2 frame rendering gap (notably StatefulShellRoute → root
+         route, e.g. sign-out), this Android window color shines through.
+         Default `Theme.Black.NoTitleBar` in dark mode produced the
+         "black screen on sign-out" bug. -->
     <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
-        <item name="android:windowBackground">?android:colorBackground</item>
+        <item name="android:windowBackground">@android:color/white</item>
     </style>
 </resources>

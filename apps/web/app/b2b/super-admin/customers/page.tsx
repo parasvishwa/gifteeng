@@ -162,8 +162,25 @@ export default function AdminCustomers() {
   const [sortByRisk, setSortByRisk] = useState(false);
 
   const fetchCustomers = async () => {
-    const data = await safeGet<{ items: Customer[] }>("/customers?pageSize=200", { items: [] });
-    const list = (data?.items as Customer[]) || [];
+    // API returns the Prisma shape: `fullName`, `ordersCount`, `createdAt`,
+    // etc. The page UI was written against a flatter `name` / `created_at`
+    // shape, so every row came back showing "Unnamed". Normalise here so
+    // the rest of the page can keep using its existing fields.
+    const data = await safeGet<{ items: any[] }>("/customers?pageSize=200", { items: [] });
+    const raw = (data?.items as any[]) ?? [];
+    const list: Customer[] = raw.map((r) => ({
+      id: r.id ?? "",
+      name: r.fullName ?? r.name ?? "",
+      email: r.email ?? "",
+      phone: r.phone ?? "",
+      location: r.location ?? "",
+      email_subscribed: r.email_subscribed ?? r.emailSubscribed ?? false,
+      orders_count: r.ordersCount ?? r.orders_count ?? 0,
+      amount_spent: Number(r.amountSpent ?? r.amount_spent ?? 0),
+      notes: r.notes ?? "",
+      created_at: r.createdAt ?? r.created_at ?? "",
+      updated_at: r.updatedAt ?? r.updated_at ?? r.createdAt ?? r.created_at ?? "",
+    }));
     setCustomers(list);
     setLoading(false);
     // Load persisted churn risks
@@ -410,12 +427,24 @@ export default function AdminCustomers() {
               className="bg-card rounded-xl border border-border/40 p-3.5 cursor-pointer group transition-all hover:shadow-sm hover:border-border/60">
               <div className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-lg bg-primary/10 flex items-center justify-center text-xs font-bold text-primary shrink-0">
-                  {(c.name?.[0] || c.email?.[0] || "?").toUpperCase()}
+                  {(c.name?.[0] || c.email?.[0] || c.phone?.[0] || "?").toUpperCase()}
                 </div>
 
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-medium truncate">{c.name || "Unnamed"}</span>
+                    {/* Display priority: full name → email prefix (the bit
+                        before `@`) → phone → "Guest customer". The old fallback
+                        ("Unnamed") looked broken when the customer obviously
+                        had an email or phone on record. */}
+                    <span className="text-sm font-medium truncate">
+                      {c.name
+                        ? c.name
+                        : c.email
+                          ? c.email.split("@")[0]
+                          : c.phone
+                            ? c.phone
+                            : "Guest customer"}
+                    </span>
                     {c.email_subscribed ? (
                       <Badge variant="outline" className="text-[8px] h-3.5 px-1 bg-emerald-500/10 text-emerald-600 border-emerald-500/20">
                         <Bell className="w-2 h-2 mr-0.5" />Subscribed

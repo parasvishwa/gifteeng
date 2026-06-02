@@ -1,5 +1,7 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
+import type { CustomPage } from "@gifteeng/db";
 import { PrismaService } from "../../prisma/prisma.service";
+import { sanitizeHtml } from "../../common/sanitize-html";
 
 export type CustomPageCreateInput = {
   title: string;
@@ -12,61 +14,92 @@ export type CustomPageUpdateInput = Partial<CustomPageCreateInput> & {
   updated_at?: string;
 };
 
+// Wire response shape — snake_case to match the admin UI contract. The Prisma
+// model uses camelCase property names (with @map to the snake_case DB columns),
+// so without this transform the admin saw every page as "Draft" because it
+// reads `is_published` while Prisma returns `isPublished`. Same trap on
+// `html_content` (editor body) and `created_at` / `updated_at` (timestamps).
+type CustomPageDto = {
+  id: string;
+  title: string;
+  slug: string;
+  html_content: string;
+  is_published: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+function toDto(p: CustomPage): CustomPageDto {
+  return {
+    id: p.id,
+    title: p.title,
+    slug: p.slug,
+    html_content: p.htmlContent,
+    is_published: p.isPublished,
+    created_at: p.createdAt.toISOString(),
+    updated_at: p.updatedAt.toISOString(),
+  };
+}
+
 @Injectable()
 export class CustomPagesService {
   constructor(private prisma: PrismaService) {}
 
-  findAll(search?: string) {
-    if (search && search.trim()) {
-      const q = search.trim().toLowerCase();
-      return this.prisma.customPage.findMany({
-        where: {
-          OR: [
-            { title: { contains: q, mode: "insensitive" } },
-            { slug: { contains: q, mode: "insensitive" } },
-          ],
-        },
-        orderBy: { createdAt: "desc" },
-      });
-    }
-    return this.prisma.customPage.findMany({ orderBy: { createdAt: "desc" } });
+  async findAll(search?: string): Promise<CustomPageDto[]> {
+    const rows = search && search.trim()
+      ? await this.prisma.customPage.findMany({
+          where: {
+            OR: [
+              { title: { contains: search.trim(), mode: "insensitive" } },
+              { slug:  { contains: search.trim(), mode: "insensitive" } },
+            ],
+          },
+          orderBy: { createdAt: "desc" },
+        })
+      : await this.prisma.customPage.findMany({ orderBy: { createdAt: "desc" } });
+    return rows.map(toDto);
   }
 
-  async findOne(id: string) {
+  async findOne(id: string): Promise<CustomPageDto> {
     const page = await this.prisma.customPage.findUnique({ where: { id } });
     if (!page) throw new NotFoundException();
-    return page;
+    return toDto(page);
   }
 
-  create(input: CustomPageCreateInput) {
-    return this.prisma.customPage.create({
+  async create(input: CustomPageCreateInput): Promise<CustomPageDto> {
+    const row = await this.prisma.customPage.create({
       data: {
         title: input.title,
         slug: input.slug,
-        htmlContent: input.html_content ?? "",
+        // Sanitize server-side so an admin with content perms can never
+        // store executable script in a CMS page. See SECURITY_AUDIT.md H-1.
+        htmlContent: sanitizeHtml(input.html_content ?? ""),
         isPublished: input.is_published ?? false,
       },
     });
+    return toDto(row);
   }
 
-  async update(id: string, input: CustomPageUpdateInput) {
+  async update(id: string, input: CustomPageUpdateInput): Promise<CustomPageDto> {
     const existing = await this.prisma.customPage.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException();
-    return this.prisma.customPage.update({
+    const row = await this.prisma.customPage.update({
       where: { id },
       data: {
         ...(input.title !== undefined && { title: input.title }),
         ...(input.slug !== undefined && { slug: input.slug }),
-        ...(input.html_content !== undefined && { htmlContent: input.html_content }),
+        ...(input.html_content !== undefined && { htmlContent: sanitizeHtml(input.html_content) }),
         ...(input.is_published !== undefined && { isPublished: input.is_published }),
       },
     });
+    return toDto(row);
   }
 
-  async remove(id: string) {
+  async remove(id: string): Promise<CustomPageDto> {
     const existing = await this.prisma.customPage.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException();
-    return this.prisma.customPage.delete({ where: { id } });
+    const row = await this.prisma.customPage.delete({ where: { id } });
+    return toDto(row);
   }
 
   /**

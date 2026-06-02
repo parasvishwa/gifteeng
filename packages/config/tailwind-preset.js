@@ -58,11 +58,15 @@ const preset = {
           light: "hsl(240 8% 28%)",
         },
       },
-      // Inter only throughout — no decorative display fonts
+      // UI/UX Pro Max design system recommendation:
+      //   Rubik     → display/headings (bold, warm, energetic — perfect for gifting)
+      //   Nunito Sans → body/UI text (clean, rounded, readable — boosts e-commerce trust)
+      // CSS variables are injected by layout.tsx next/font; fallbacks ensure
+      // the correct font still loads on any SSR mismatch.
       fontFamily: {
-        display: ["Inter", "system-ui", "sans-serif"],
-        body: ["Inter", "system-ui", "sans-serif"],
-        inter: ["Inter", "system-ui", "sans-serif"],
+        display: ["var(--font-display)", "Rubik", "system-ui", "sans-serif"],
+        body:    ["var(--font-inter)",   "Nunito Sans", "system-ui", "sans-serif"],
+        inter:   ["var(--font-inter)",   "Nunito Sans", "system-ui", "sans-serif"],
       },
       // Design system radii — use Tailwind's default scale which maps exactly:
       // rounded-lg=8px(chips), rounded-xl=12px(buttons), rounded-2xl=16px(cards)

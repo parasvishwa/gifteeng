@@ -39,6 +39,8 @@ class DeliveryEstimate {
   final int deliveryDays;
   final bool codAvailable;
   final bool serviceable;
+  /// True when the pincode qualifies for Mumbai-metro same-day delivery.
+  final bool sameDay;
 
   DeliveryEstimate({
     required this.city,
@@ -46,6 +48,7 @@ class DeliveryEstimate {
     required this.deliveryDays,
     required this.codAvailable,
     required this.serviceable,
+    this.sameDay = false,
   });
 
   int get totalDays => dispatchDays + deliveryDays;
@@ -476,9 +479,9 @@ class _Result extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Delivers by — hero line (compact)
+        // Delivers by — hero line
         Row(children: [
-          Icon(Icons.local_shipping_rounded, size: 16, color: success),
+          Icon(Icons.local_shipping_outlined, size: 15, color: success),
           const Gap(6),
           Expanded(
             child: RichText(
@@ -488,46 +491,15 @@ class _Result extends StatelessWidget {
                 TextSpan(text: deliveryStr,
                   style: GoogleFonts.inter(
                     fontSize: 13, fontWeight: FontWeight.w800, color: textPrimary)),
+                TextSpan(text: ' (${estimate.totalDays}d)',
+                  style: GoogleFonts.inter(fontSize: 11, color: textMuted)),
               ]),
             ),
           ),
         ]),
         const Gap(8),
 
-        // Compact timeline — side-by-side dispatch + delivery
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          decoration: BoxDecoration(
-            color: bgElevated,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: border),
-          ),
-          child: Row(children: [
-            Expanded(
-              child: _CompactTimelineItem(
-                emoji: '📦',
-                label: 'Dispatched by',
-                value: dispatchStr,
-                sub: '${estimate.dispatchDays} day${estimate.dispatchDays == 1 ? '' : 's'}',
-                textPrimary: textPrimary,
-                textMuted: textMuted,
-              ),
-            ),
-            Container(width: 1, height: 36, color: border, margin: const EdgeInsets.symmetric(horizontal: 12)),
-            Expanded(
-              child: _CompactTimelineItem(
-                emoji: '🏠',
-                label: 'Delivered by',
-                value: deliveryStr,
-                sub: '${estimate.totalDays} days total',
-                textPrimary: accent,
-                textMuted: textMuted,
-              ),
-            ),
-          ]),
-        ),
-
-        const Gap(8),
+        // COD + returns chips — inline, compact
         Row(children: [
           _Feature(
             emoji: estimate.codAvailable ? '💵' : '💳',
@@ -538,7 +510,7 @@ class _Result extends StatelessWidget {
           const Gap(8),
           _Feature(
             emoji: '🔄',
-            label: 'Easy 7-day return',
+            label: '7-day returns',
             color: textSecondary,
             bg: bgElevated, border: border,
           ),

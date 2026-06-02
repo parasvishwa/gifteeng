@@ -148,28 +148,32 @@ class AdminController {
     };
   }
 
+  @Get("sidebar-counts")
+  async sidebarCounts(): Promise<{ orders: number; production: number; messages: number }> {
+    const [orders, production, messages] = await Promise.all([
+      this.prisma.order.count({ where: { status: "new_order" } }),
+      this.prisma.order.count({ where: { status: "in_production" } }),
+      this.prisma.contactMessage.count({ where: { status: "new" } }),
+    ]);
+    return { orders, production, messages };
+  }
+
   @Get("stats-extended")
   async statsExtended(): Promise<{
     companies: number;
     customers: number;
     products: number;
     orders: number;
-    activeCompanies: number;
-    activeCampaigns: number;
-    totalWalletBalance: string;
-    totalLockedBalance: string;
     ordersLast7Days: number;
     revenueLast7Days: string;
   }> {
+    // Corporate campaign / wallet stats removed with the corporate offering.
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const [
       companies,
       customers,
       products,
       orders,
-      activeCompanies,
-      activeCampaigns,
-      walletAgg,
       ordersLast7Days,
       revenueAgg,
     ] = await Promise.all([
@@ -177,11 +181,6 @@ class AdminController {
       this.prisma.customer.count(),
       this.prisma.product.count(),
       this.prisma.order.count(),
-      this.prisma.company.count({ where: { status: "active" } }),
-      this.prisma.campaign.count({ where: { status: "active" } }),
-      this.prisma.wallet.aggregate({
-        _sum: { balance: true, lockedBalance: true },
-      }),
       this.prisma.order.count({ where: { placedAt: { gte: sevenDaysAgo } } }),
       this.prisma.order.aggregate({
         _sum: { grandTotal: true },
@@ -193,10 +192,6 @@ class AdminController {
       customers,
       products,
       orders,
-      activeCompanies,
-      activeCampaigns,
-      totalWalletBalance: (walletAgg._sum.balance ?? new Prisma.Decimal(0)).toString(),
-      totalLockedBalance: (walletAgg._sum.lockedBalance ?? new Prisma.Decimal(0)).toString(),
       ordersLast7Days,
       revenueLast7Days: (revenueAgg._sum.grandTotal ?? new Prisma.Decimal(0)).toString(),
     };
@@ -382,6 +377,20 @@ class PublicSettingsController {
       "delivery_charge",
       "free_delivery_above",
       "legal_links",              // policy URLs for mobile app
+      // Hero section copy — set in /super-admin/settings → Hero tab. Read
+      // by web `_HomePageShell` and Flutter `_HeroCopyProvider` so admin
+      // changes flow to both surfaces without a redeploy.
+      "hero_enabled",
+      "hero_tagline",
+      "hero_heading",
+      "hero_heading_highlight",
+      "hero_subtitle",
+      "hero_background_image",
+      "hero_button_text",
+      "hero_button_link",
+      "hero_button2_text",
+      "hero_button2_link",
+      "hero_show_search",
     ];
     const rows = await this.prisma.siteSetting.findMany({
       where: { key: { in: WHITELIST } },
@@ -415,6 +424,20 @@ class PublicSettingsController {
         shipping:       "https://gifteeng.com/shipping-policy",
         returns:        "https://gifteeng.com/return-policy",
       },
+      // ── Hero section copy ───────────────────────────────────────────
+      // Defaults match the existing hardcoded copy in _HomePageShell so a
+      // fresh install renders identically until admin overrides.
+      hero_enabled:            str("hero_enabled",            "true"),
+      hero_tagline:            str("hero_tagline",            "ENGINEER YOUR EMOTIONS"),
+      hero_heading:            str("hero_heading",            "Personalized Gifts That Create"),
+      hero_heading_highlight:  str("hero_heading_highlight",  "Forever Memories"),
+      hero_subtitle:           str("hero_subtitle",           "Customized with love. Delivered with happiness."),
+      hero_background_image:   str("hero_background_image",   ""),
+      hero_button_text:        str("hero_button_text",        "Shop Bestsellers"),
+      hero_button_link:        str("hero_button_link",        "/b2c/products?sort=popular"),
+      hero_button2_text:       str("hero_button2_text",       ""),
+      hero_button2_link:       str("hero_button2_link",       ""),
+      hero_show_search:        str("hero_show_search",        "true"),
     };
   }
 

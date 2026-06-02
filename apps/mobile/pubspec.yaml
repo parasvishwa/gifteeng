@@ -1,7 +1,7 @@
 name: gifteeng
 description: Gifteeng — Gift smarter. Earn Goins. Play & Win.
 publish_to: 'none'
-version: 1.0.0+4014
+version: 1.0.3+4020
 
 environment:
   sdk: '>=3.4.0 <4.0.0'
@@ -48,6 +48,10 @@ dependencies:
   # SMS OTP autofill
   sms_autofill: ^2.4.0
 
+  # Social sign-in (Google + Apple)
+  google_sign_in: ^6.2.2
+  sign_in_with_apple: ^6.1.4
+
   # Game effects
   confetti: ^0.7.0
   audioplayers: ^6.1.0
@@ -69,6 +73,11 @@ dependencies:
 
   # Canvas editor widgets (full customizer)
   flutter_colorpicker: ^1.1.0
+
+  # Customizer Phase B+C enhancements
+  palette_generator: ^0.3.3+4    # colorthief equivalent — extract palette from image
+  qr_flutter: ^4.1.0             # qr-code-styling equivalent — QR code widget
+  pretty_qr_code: ^3.3.0         # styled QR code with rounded dots
   # ── Removed (unused): ─────────────────────────────────────────────────
   #   matrix_gesture_detector  → not referenced anywhere; dropped
   #   flutter_staggered_animations → not referenced; dropped

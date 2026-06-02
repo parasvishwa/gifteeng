@@ -16,6 +16,8 @@ import { CollectionsService } from "./collections.service";
 import { JwtB2bGuard } from "../../common/guards/jwt-b2b.guard";
 import { RolesGuard } from "../../common/guards/roles.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
+import { PermissionsGuard, RequirePermissions } from "../auth-b2b/permissions.guard";
+import { PERMISSIONS } from "../auth-b2b/permissions";
 import { ZodValidationPipe } from "../../common/pipes/zod.pipe";
 
 const createSchema = z.object({
@@ -55,8 +57,9 @@ export class CollectionsController {
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtB2bGuard, RolesGuard)
-  @Roles("super_admin", "sales_admin")
+  @UseGuards(JwtB2bGuard, RolesGuard, PermissionsGuard)
+  @Roles("super_admin", "sales_admin", "hr_admin", "production", "employee")
+  @RequirePermissions(PERMISSIONS.COLLECTIONS_CREATE)
   @Post()
   @UsePipes(new ZodValidationPipe(createSchema))
   create(@Body() body: z.infer<typeof createSchema>): Promise<unknown> {
@@ -64,8 +67,9 @@ export class CollectionsController {
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtB2bGuard, RolesGuard)
-  @Roles("super_admin", "sales_admin")
+  @UseGuards(JwtB2bGuard, RolesGuard, PermissionsGuard)
+  @Roles("super_admin", "sales_admin", "hr_admin", "production", "employee")
+  @RequirePermissions(PERMISSIONS.COLLECTIONS_EDIT)
   @Patch(":id")
   update(
     @Param("id") id: string,
@@ -75,8 +79,9 @@ export class CollectionsController {
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtB2bGuard, RolesGuard)
-  @Roles("super_admin")
+  @UseGuards(JwtB2bGuard, RolesGuard, PermissionsGuard)
+  @Roles("super_admin", "sales_admin", "hr_admin", "production", "employee")
+  @RequirePermissions(PERMISSIONS.COLLECTIONS_DELETE)
   @Delete(":id")
   remove(@Param("id") id: string): Promise<unknown> {
     return this.service.remove(id);
@@ -84,8 +89,9 @@ export class CollectionsController {
 
   // Aliases for legacy admin UI that uses POST-based actions.
   @ApiBearerAuth()
-  @UseGuards(JwtB2bGuard, RolesGuard)
-  @Roles("super_admin")
+  @UseGuards(JwtB2bGuard, RolesGuard, PermissionsGuard)
+  @Roles("super_admin", "sales_admin", "hr_admin", "production", "employee")
+  @RequirePermissions(PERMISSIONS.COLLECTIONS_DELETE)
   @Post(":id/delete")
   removeViaPost(@Param("id") id: string): Promise<unknown> {
     return this.service.remove(id);
@@ -97,8 +103,9 @@ export class CollectionsController {
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtB2bGuard, RolesGuard)
-  @Roles("super_admin", "sales_admin")
+  @UseGuards(JwtB2bGuard, RolesGuard, PermissionsGuard)
+  @Roles("super_admin", "sales_admin", "hr_admin", "production", "employee")
+  @RequirePermissions(PERMISSIONS.COLLECTIONS_EDIT)
   @Post(":id/products")
   addProducts(
     @Param("id") id: string,
@@ -110,8 +117,9 @@ export class CollectionsController {
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtB2bGuard, RolesGuard)
-  @Roles("super_admin", "sales_admin")
+  @UseGuards(JwtB2bGuard, RolesGuard, PermissionsGuard)
+  @Roles("super_admin", "sales_admin", "hr_admin", "production", "employee")
+  @RequirePermissions(PERMISSIONS.COLLECTIONS_EDIT)
   @Post(":id/products/remove")
   removeProduct(
     @Param("id") id: string,

@@ -18,18 +18,41 @@ part 'api_client.g.dart';
 /// Base URL — switch via flavors or env vars at build time.
 const _kBaseUrl = String.fromEnvironment(
   'API_BASE_URL',
-  defaultValue: 'https://new-api.gifteeng.com/api',
+  defaultValue: 'https://www.gifteeng.com/api',
 );
 
 const _kTokenKey   = 'gifteeng.b2c.token';
 const _kSessionKey = 'gifteeng.cart.session';
+
+// ─── Guest-mode preference ────────────────────────────────────────────────────
+//
+// Apple App Store Review Guideline 5.1.1(v) requires apps without significant
+// account-based features to let users in without login. We let the user tap
+// "Continue as guest" on the auth screen → flip this pref to true → they can
+// browse Home/Shop/Product/Casino without auth. Account-required actions
+// (cart, orders, wishlist) gate inline.
+const _kGuestModeKey = 'gifteeng.guest_mode';
 
 // ─── Storage provider ────────────────────────────────────────────────────────
 
 @riverpod
 FlutterSecureStorage secureStorage(Ref ref) =>
     const FlutterSecureStorage(
-      aOptions: AndroidOptions(encryptedSharedPreferences: true),
+      // `encryptedSharedPreferences: true` (Jetpack Security
+      // EncryptedSharedPreferences) was throwing on Samsung One UI / Fold 7:
+      //
+      //   E/SecureStorageAndroid: FlutterSecureStorage
+      //     .initializeEncryptedSharedPreferencesManager (line 248)
+      //     .ensureInitialized (line 170)
+      //
+      // Every read/write/delete then hung indefinitely, which manifested as
+      // the "black screen on sign-out + token persists after restart" bug
+      // (storage.delete never returned → UI thread blocked → no rebuild).
+      //
+      // Falling back to the plugin's default Android Keystore impl
+      // (encryptedSharedPreferences: false) — slightly older, but reliable
+      // across all OEMs we ship on.
+      aOptions: AndroidOptions(encryptedSharedPreferences: false),
     );
 
 // ─── Dio instance ─────────────────────────────────────────────────────────────
@@ -184,6 +207,12 @@ class AuthTokenNotifier extends _$AuthTokenNotifier {
     final storage = ref.read(secureStorageProvider);
     await storage.write(key: _kTokenKey, value: token);
     state = AsyncValue.data(token);
+    // Clear guest mode — they're a real user now.
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_kGuestModeKey, false);
+      ref.invalidate(guestModeNotifierProvider);
+    } catch (_) {}
     // Tag Sentry with the customer id so crashes are attributable. The
     // JWT's `sub` claim carries the customer UUID — no PII, just the id.
     final customerId = _extractSubClaim(token);
@@ -195,17 +224,76 @@ class AuthTokenNotifier extends _$AuthTokenNotifier {
     unawaited(PushService.instance.onUserLoggedIn());
   }
 
+  /// Sign the user out.
+  ///
+  /// IMPORTANT ordering: we set the Riverpod state to `null` BEFORE awaiting
+  /// `storage.delete`. Reasoning:
+  ///
+  ///   • The router's `refreshListenable` listens to this provider. The
+  ///     instant `state` flips to null, GoRouter re-runs `redirect`, which
+  ///     synchronously navigates the user from `/account` to `/auth`.
+  ///   • If we awaited `storage.delete` first, the route would dispose
+  ///     mid-flight (the Account screen tearing down while delete is
+  ///     pending), producing the black-frame flash the user reported.
+  ///
+  /// After the navigation completes, we then await storage.delete on the
+  /// new (auth) screen's frame — by which point there's no race.
+  ///
+  /// Defensive double-check: if for any reason the key survives the delete
+  /// (some Android keystore implementations have weird quirks where direct
+  /// delete fails silently), we overwrite with empty then delete again. This
+  /// guarantees the user is actually signed out next launch.
   Future<void> clearToken() async {
-    final storage = ref.read(secureStorageProvider);
-    await storage.delete(key: _kTokenKey);
+    // 1. Flip state first → router redirects immediately, no black flash.
     state = const AsyncValue.data(null);
-    // Clear Sentry user — subsequent errors are attributed to anon session
-    await setSentryUser(id: null);
-    // Tell the backend to stop pushing to this device.
+
+    // 2. Now clean up persisted token. Wrapped in try/catch so storage
+    //    errors never block the UI flow (user is already navigating out).
+    try {
+      final storage = ref.read(secureStorageProvider);
+      await storage.delete(key: _kTokenKey);
+
+      // 3. Verify the delete actually committed. On some Android devices
+      //    with corrupted keystores, `delete` is a no-op. Force-overwrite
+      //    then re-delete as a fallback so the token can never resurrect
+      //    on next launch.
+      final stillThere = await storage.read(key: _kTokenKey);
+      if (stillThere != null) {
+        await storage.write(key: _kTokenKey, value: '');
+        await storage.delete(key: _kTokenKey);
+      }
+    } catch (_) {
+      // Storage failures are not user-actionable — swallow but state is
+      // already cleared so the user sees the right UI.
+    }
+
+    // 4. Sentry + push cleanup (non-blocking).
+    try { await setSentryUser(id: null); } catch (_) {}
     unawaited(PushService.instance.onUserLoggedOut());
   }
 
   bool get isLoggedIn => state.valueOrNull != null;
+}
+
+// ─── Guest mode notifier ──────────────────────────────────────────────────────
+//
+// Tracks whether the user explicitly chose to browse without an account.
+// Set to true when the user taps "Continue as guest" on AuthScreen. Cleared
+// on successful sign-in (since they're now a real user) and on sign-out
+// (so the next launch shows the auth screen again).
+@riverpod
+class GuestModeNotifier extends _$GuestModeNotifier {
+  @override
+  Future<bool> build() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_kGuestModeKey) ?? false;
+  }
+
+  Future<void> setEnabled(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_kGuestModeKey, value);
+    state = AsyncValue.data(value);
+  }
 }
 
 // ─── API error helper ─────────────────────────────────────────────────────────

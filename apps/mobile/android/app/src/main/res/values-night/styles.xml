@@ -11,8 +11,12 @@
          Flutter UI initializes, as well as behind your Flutter UI while its
          running.
 
-         This Theme is only used starting with V2 of Flutter's Android embedding. -->
+         IMPORTANT: even in dark mode we keep the Android window background
+         WHITE so the brief Flutter rendering gap during route transitions
+         (notably sign-out from /account → /auth) never exposes a black
+         frame. Dark-mode UI inside Flutter is still controlled by the app's
+         themeMode; only the Android-level window underneath stays white. -->
     <style name="NormalTheme" parent="@android:style/Theme.Black.NoTitleBar">
-        <item name="android:windowBackground">?android:colorBackground</item>
+        <item name="android:windowBackground">@android:color/white</item>
     </style>
 </resources>

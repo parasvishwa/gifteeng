@@ -103,7 +103,17 @@ class _GoinsScreenState extends ConsumerState<GoinsScreen>
                 leading: IconButton(
                   icon: Icon(Icons.arrow_back_ios_new_rounded,
                       size: 18, color: c.text0),
-                  onPressed: () => context.pop(),
+                  // Safe back: pop if there's a route to pop to, otherwise
+                  // go to home. Without this fallback, if the user landed on
+                  // /goins via context.go(...) (which replaces the stack),
+                  // context.pop() does nothing and the user is trapped.
+                  onPressed: () {
+                    if (context.canPop()) {
+                      context.pop();
+                    } else {
+                      context.go('/');
+                    }
+                  },
                 ),
                 titleSpacing: 4,
                 title: Row(
@@ -461,13 +471,21 @@ class _QuickAction extends StatelessWidget {
 class _EarnSection extends StatelessWidget {
   const _EarnSection();
 
+  // ── Earn ways ────────────────────────────────────────────────────────────
+  // `useGo` switches a bottom-tab branch (Shop, Play) — `context.push` on a
+  // shell route causes the back stack to behave weirdly. `useGo == false` →
+  // standard push (Referrals, Orders).
   static const _ways = [
-    (icon: '🛒', title: 'Shop & Earn',       sub: '5G per ₹100 spent',     route: '/shop'),
-    (icon: '🎰', title: 'Play Gift Casino',  sub: 'Win up to 500G daily',  route: '/play'),
-    (icon: '👥', title: 'Refer a Friend',    sub: '200G per referral',     route: '/referrals'),
-    (icon: '⭐', title: 'Daily Streak',      sub: '10–100G per day',       route: '/play'),
-    (icon: '✍️', title: 'Write a Review',    sub: '25G per approved review', route: null),
-    (icon: '🎂', title: 'Birthday Bonus',    sub: '150G on your birthday', route: null),
+    (icon: '🛒', title: 'Shop & Earn',       sub: '5G per ₹100 spent',       route: '/shop',      useGo: true),
+    (icon: '🎰', title: 'Play Gift Casino',  sub: 'Win up to 500G daily',    route: '/play',      useGo: true),
+    (icon: '👥', title: 'Refer a Friend',    sub: '200G per referral',       route: '/referrals', useGo: false),
+    (icon: '⭐', title: 'Daily Streak',      sub: '10–100G per day',         route: '/play',      useGo: true),
+    // "Write a Review" → My Orders. User can tap a delivered order to review
+    // it. (The order-detail screen already has the review CTA.)
+    (icon: '✍️', title: 'Write a Review',    sub: '25G per approved review', route: '/orders',    useGo: false),
+    // Birthday is informational — needs the profile to have a DOB field,
+    // which the edit sheet doesn't include yet. Leave non-tappable.
+    (icon: '🎂', title: 'Birthday Bonus',    sub: '150G on your birthday',   route: null,         useGo: false),
   ];
 
   @override
@@ -531,9 +549,17 @@ class _EarnSection extends StatelessWidget {
             );
             final tappable = w.route != null
                 ? GestureDetector(
+                    behavior: HitTestBehavior.opaque,
                     onTap: () {
                       HapticFeedback.selectionClick();
-                      context.push(w.route!);
+                      // Shell-tab destinations need `go` (switches the
+                      // bottom-tab branch). External screens use `push`
+                      // to layer over the current stack with a back button.
+                      if (w.useGo) {
+                        context.go(w.route!);
+                      } else {
+                        context.push(w.route!);
+                      }
                     },
                     child: row,
                   )

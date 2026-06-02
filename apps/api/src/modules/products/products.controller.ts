@@ -19,6 +19,9 @@ import { ZodValidationPipe } from "../../common/pipes/zod.pipe";
 import { JwtB2bGuard } from "../../common/guards/jwt-b2b.guard";
 import { RolesGuard } from "../../common/guards/roles.guard";
 import { Roles } from "../../common/decorators/roles.decorator";
+import { PermissionsGuard, RequirePermissions } from "../auth-b2b/permissions.guard";
+import { PERMISSIONS } from "../auth-b2b/permissions";
+import { SeoEnrichmentService } from "../seo/seo-enrichment.service";
 
 const moneyLike = z.union([z.number(), z.string()]);
 
@@ -36,7 +39,9 @@ const createProductSchema = z.object({
   title: z.string().min(1),
   description: z.string().optional(),
   category: z.string().optional(),
+  brandName: z.string().optional(),
   basePrice: moneyLike,
+  mrp: moneyLike.nullish(),
   currency: z.string().optional(),
   sku: z.string().optional(),
   inventory: z.number().int().nonnegative().optional(),
@@ -74,25 +79,27 @@ const variantUpdateSchema = z.object({
 @ApiTags("products")
 @Controller("products")
 export class ProductsController {
-  constructor(private service: ProductsService) {}
+  constructor(
+    private service: ProductsService,
+    private seo: SeoEnrichmentService,
+  ) {}
 
   @Get()
   list(@Query(new ZodValidationPipe(ProductListQuerySchema)) q: any) {
     return this.service.listB2c(q);
   }
 
-  @ApiBearerAuth()
-  @UseGuards(JwtB2bGuard)
-  @Get("b2b/catalog")
-  b2bCatalog(@Req() req: any, @Query(new ZodValidationPipe(ProductListQuerySchema)) q: any) {
-    return this.service.listB2b(req.user.companyId, q);
-  }
-
   // ---- Admin CRUD ----
 
+  // Note: The three endpoints below pair the legacy RolesGuard with the new
+  // PermissionsGuard so that a super-admin can grant fine-grained permissions
+  // (e.g. "products.create" only) to teammates without giving them blanket
+  // sales_admin privileges. RolesGuard still runs first as a coarse gate.
+
   @ApiBearerAuth()
-  @UseGuards(JwtB2bGuard, RolesGuard)
-  @Roles("super_admin", "sales_admin")
+  @UseGuards(JwtB2bGuard, RolesGuard, PermissionsGuard)
+  @Roles("super_admin", "sales_admin", "hr_admin", "production", "employee")
+  @RequirePermissions(PERMISSIONS.PRODUCTS_CREATE)
   @Post("admin")
   @UsePipes(new ZodValidationPipe(createProductSchema))
   createAdmin(@Body() body: z.infer<typeof createProductSchema>) {
@@ -100,8 +107,9 @@ export class ProductsController {
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtB2bGuard, RolesGuard)
-  @Roles("super_admin", "sales_admin")
+  @UseGuards(JwtB2bGuard, RolesGuard, PermissionsGuard)
+  @Roles("super_admin", "sales_admin", "hr_admin", "production", "employee")
+  @RequirePermissions(PERMISSIONS.PRODUCTS_EDIT)
   @Patch("admin/:id")
   updateAdmin(
     @Param("id") id: string,
@@ -112,8 +120,9 @@ export class ProductsController {
   }
 
   @ApiBearerAuth()
-  @UseGuards(JwtB2bGuard, RolesGuard)
-  @Roles("super_admin", "sales_admin")
+  @UseGuards(JwtB2bGuard, RolesGuard, PermissionsGuard)
+  @Roles("super_admin", "sales_admin", "hr_admin", "production", "employee")
+  @RequirePermissions(PERMISSIONS.PRODUCTS_DELETE)
   @Delete("admin/:id")
   deleteAdmin(@Param("id") id: string) {
     return this.service.softDeleteAdmin(id);
@@ -214,9 +223,102 @@ export class ProductsController {
   @ApiBearerAuth()
   @UseGuards(JwtB2bGuard, RolesGuard)
   @Roles("super_admin", "sales_admin")
+  @Patch("admin/:id/fbt")
+  setFbt(
+    @Param("id") id: string,
+    @Body() body: { fbtIds?: string[] },
+  ) {
+    return this.service.setFbtProducts(id, body.fbtIds ?? []);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtB2bGuard, RolesGuard)
+  @Roles("super_admin", "sales_admin")
   @Post("admin/:id/enrich-from-amazon")
   enrichFromAmazon(@Param("id") id: string) {
     return this.service.enrichFromAmazon(id);
+  }
+
+  // ── SEO endpoints ─────────────────────────────────────────────────────────
+
+  /**
+   * GET /api/products/admin/:id/seo
+   * Returns current SEO data + score + improvement suggestions.
+   * Read-only — does not modify the product.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtB2bGuard, RolesGuard)
+  @Roles("super_admin", "sales_admin")
+  @Get("admin/:id/seo")
+  async getSeoPreview(@Param("id") id: string) {
+    const product = await this.service.getAdminBySlug(id);
+    if (!product) return { error: "Product not found" };
+    return this.seo.getSeoPreview({
+      id: product.id,
+      slug: (product as any).slug,
+      title: (product as any).title,
+      description: (product as any).description,
+      category: (product as any).category,
+      basePrice: (product as any).basePrice,
+      currency: (product as any).currency,
+      images: (product as any).images,
+      isCustomizable: (product as any).isCustomizable,
+      metadata: (product as any).metadata,
+    });
+  }
+
+  /**
+   * POST /api/products/admin/:id/seo/regenerate?ai=true
+   * Regenerates SEO metadata for a single product.
+   * ?ai=true forces AI enrichment even if auto-AI is disabled.
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtB2bGuard, RolesGuard)
+  @Roles("super_admin", "sales_admin")
+  @Post("admin/:id/seo/regenerate")
+  async regenerateSeo(
+    @Param("id") id: string,
+    @Query("ai") ai?: string,
+  ) {
+    const product = await this.service.getAdminBySlug(id);
+    if (!product) return { error: "Product not found" };
+    const forceAi = ai === "true" || ai === "1";
+    const result = await this.seo.enrichProduct(
+      {
+        id: (product as any).id,
+        slug: (product as any).slug,
+        title: (product as any).title,
+        description: (product as any).description,
+        category: (product as any).category,
+        basePrice: (product as any).basePrice,
+        currency: (product as any).currency,
+        images: (product as any).images,
+        isCustomizable: (product as any).isCustomizable,
+        metadata: { ...(((product as any).metadata) ?? {}), seo: undefined }, // force regen
+      },
+      forceAi,
+    );
+    return { success: true, seo: result };
+  }
+
+  /**
+   * POST /api/products/admin/seo/bulk-regenerate
+   * Bulk-regenerates SEO for all B2C products missing SEO metadata.
+   * Body: { onlyMissing?: boolean; limit?: number; forceAi?: boolean }
+   */
+  @ApiBearerAuth()
+  @UseGuards(JwtB2bGuard, RolesGuard)
+  @Roles("super_admin")
+  @Post("admin/seo/bulk-regenerate")
+  async bulkRegenerateSeo(
+    @Body() body?: { onlyMissing?: boolean; limit?: number; forceAi?: boolean },
+  ) {
+    const result = await this.seo.bulkEnrich({
+      onlyMissing: body?.onlyMissing ?? true,
+      limit:       body?.limit       ?? 200,
+      forceAi:     body?.forceAi     ?? false,
+    });
+    return { success: true, ...result };
   }
 
   @Get("categories/list")

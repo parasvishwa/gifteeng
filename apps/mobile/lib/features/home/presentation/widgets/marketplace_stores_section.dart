@@ -55,7 +55,7 @@ class MarketplaceStoresSection extends ConsumerWidget {
       data: (links) {
         if (links.isEmpty) return const SizedBox.shrink();
         return Padding(
-          padding: const EdgeInsets.symmetric(vertical: 14),
+          padding: EdgeInsets.zero,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [

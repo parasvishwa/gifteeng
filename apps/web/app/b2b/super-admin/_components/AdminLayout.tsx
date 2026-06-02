@@ -28,7 +28,7 @@ const routeTitles: Record<string, string> = {
   "/super-admin/contact-messages": "Messages",
   "/super-admin/discounts": "Discounts",
   "/super-admin/referrals": "Referrals",
-  "/super-admin/coins": "Coins & Loyalty",
+  "/super-admin/coins": "Goins & Loyalty",
   "/super-admin/sections": "Homepage Sections",
   "/super-admin/homepage-content": "Homepage Content",
   "/super-admin/reviews": "Reviews",
@@ -46,10 +46,6 @@ const routeTitles: Record<string, string> = {
   "/super-admin/files": "Files",
   "/super-admin/settings": "Settings",
   "/super-admin/ai-settings": "AI Settings",
-  "/super-admin/companies": "Companies",
-  "/super-admin/hr-admins": "HR Admins",
-  "/super-admin/campaigns": "Campaigns",
-  "/super-admin/wallets": "Wallets",
   "/super-admin/production-queue": "Production Queue",
 };
 
@@ -60,24 +56,18 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (isLoading) return;
-    if (!user) {
-      router.push("/");
-      return;
-    }
-    if (user.role !== "super_admin" && user.role !== "sales_admin") {
+    if (user && user.role !== "super_admin" && user.role !== "sales_admin") {
       router.push(roleLandingPath(user.role));
     }
   }, [user, isLoading, router]);
 
-  if (isLoading) {
+  if (isLoading || !user) {
     return (
       <div className="flex min-h-screen w-full items-center justify-center bg-muted/30">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        <div className="h-7 w-7 rounded-full border-2 border-primary/20 border-t-primary animate-spin" />
       </div>
     );
   }
-
-  if (!user) return null;
   if (user.role !== "super_admin" && user.role !== "sales_admin") return null;
 
   const currentTitle = routeTitles[pathname] || "Admin";

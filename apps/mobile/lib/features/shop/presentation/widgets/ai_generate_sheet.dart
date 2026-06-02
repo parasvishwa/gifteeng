@@ -25,7 +25,7 @@ import '../../../../core/theme/app_theme.dart';
 // at the top of `_generate()`.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const _kGifteengBackend = 'https://new-api.gifteeng.com/api/customizer/ai';
+const _kGifteengBackend = 'https://www.gifteeng.com/api/customizer/ai';
 const _kPollinationsBase = 'https://image.pollinations.ai/prompt/';
 
 /// Style preset — name + descriptive suffix appended to the prompt.

@@ -84,12 +84,12 @@ export function roleLandingPath(role: B2bRole | null): string {
       return "/super-admin";
     case "sales_admin":
       return "/super-admin";
-    case "hr_admin":
-      return "/hr-admin";
     case "production":
       return "/production";
+    // hr_admin / employee corporate areas were removed when the corporate
+    // offering was discontinued — those roles land on the storefront root.
+    case "hr_admin":
     case "employee":
-      return "/employee";
     default:
       return "/";
   }

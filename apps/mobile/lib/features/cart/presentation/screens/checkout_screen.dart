@@ -75,6 +75,14 @@ final _savedAddressesProvider =
 //
 // Mirrors the web checkout — loads from /api/settings/public so the admin
 // can change values without a code deploy.
+//
+// NOTE on `razorpay_key_id`: this used to fall back to the live key
+// `rzp_live_RdKEIds1IVzjoU` baked into the APK. That made key rotation
+// impossible without an app update + Apple review, and shipping the live
+// key in source control is bad hygiene even though it's not a secret.
+// The fallback is now empty — if the settings call genuinely fails we
+// disable Razorpay UI rather than initialise the SDK with a stale key.
+// See docs/SECURITY_AUDIT.md M-4.
 final _publicSettingsProvider =
     FutureProvider.autoDispose<Map<String, dynamic>>((ref) async {
   try {
@@ -83,12 +91,13 @@ final _publicSettingsProvider =
     final data = res.data;
     if (data is Map) return Map<String, dynamic>.from(data);
   } catch (_) {}
-  // Sensible defaults that match the web checkout defaults.
+  // Defaults: only COD is enabled — Razorpay key is intentionally absent so
+  // we never pop the SDK with a stale baked-in key.
   return const {
     'cod_enabled':         'true',
     'cod_charge':          '50',
-    'razorpay_enabled':    'true',
-    'razorpay_key_id':     'rzp_live_RdKEIds1IVzjoU',
+    'razorpay_enabled':    'false',
+    'razorpay_key_id':     '',
     'delivery_charge':     '59',
     'free_delivery_above': '499',
   };
@@ -195,6 +204,33 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     _recipientPhone.addListener(_rebuild);
     _gstinCtrl.addListener(_rebuild);
     _loadCachedName();
+  }
+
+  /// Tracked so we only auto-fill the default address once. After that the
+  /// user can edit fields or pick a different chip without us re-stamping
+  /// the form on the next provider invalidation.
+  bool _defaultAddressApplied = false;
+
+  /// Called from build() when saved addresses arrive. Picks the address
+  /// flagged isDefault (falls back to the first one) and stamps it into
+  /// the delivery form so the user can proceed straight to payment.
+  void _maybeApplyDefaultAddress(List<Map<String, dynamic>> addresses) {
+    if (_defaultAddressApplied) return;
+    if (addresses.isEmpty) return;
+    // Don't overwrite anything the user has already typed.
+    if (_pincodeCtrl.text.isNotEmpty || _addressCtrl.text.isNotEmpty) {
+      _defaultAddressApplied = true;
+      return;
+    }
+    final def = addresses.firstWhere(
+      (a) => a['isDefault'] == true,
+      orElse: () => addresses.first,
+    );
+    _defaultAddressApplied = true;
+    // Defer to post-frame so we don't setState during the build phase.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _loadSavedAddress(def);
+    });
   }
 
   void _rebuild() {
@@ -360,10 +396,20 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
   }
 
   /// Smart city-based delivery message (mirrors web logic).
+  ///
+  /// Mumbai / MMR honors the same-day cutoff (12 PM local). Order before
+  /// noon → same-day. After noon → next-day (today's dispatch window has
+  /// closed). Other cities show their standard ETA bracket.
   String _deliveryMessageFor(String city) {
     final c = city.trim().toLowerCase();
     const mmr = ['mumbai', 'thane', 'navi mumbai', 'kalyan', 'vasai', 'virar'];
-    if (mmr.contains(c)) return 'Mumbai / MMR: delivered in 3 business days';
+    if (mmr.contains(c)) {
+      final hour = DateTime.now().hour;
+      final beforeCutoff = hour < 12;
+      return beforeCutoff
+          ? 'Mumbai / MMR: same-day delivery (order by 12 PM)'
+          : 'Mumbai / MMR: next-day delivery (today\'s 12 PM cutoff has passed)';
+    }
     const metro = ['delhi', 'bangalore', 'bengaluru', 'chennai',
         'kolkata', 'hyderabad', 'pune', 'ahmedabad'];
     if (metro.contains(c)) return '$city: delivered in 4–5 business days';
@@ -569,12 +615,25 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
   // ── Razorpay handlers ─────────────────────────────────────────────────────
 
   void _openRazorpay(double amount) {
-    // Prefer key from admin settings; fall back to build-time env var.
+    // Razorpay key MUST come from admin settings now — no baked-in fallback.
+    // If the settings call failed, prefer the build-time env override (set
+    // by CI for QA builds), otherwise surface an actionable error rather
+    // than initialising the SDK with a stale or empty key. See
+    // docs/SECURITY_AUDIT.md M-4.
     final settings = ref.read(_publicSettingsProvider).valueOrNull ?? {};
-    final rzpKey = (settings['razorpay_key_id'] as String?)?.isNotEmpty == true
-        ? settings['razorpay_key_id'] as String
-        : const String.fromEnvironment('RAZORPAY_KEY',
-              defaultValue: 'rzp_live_RdKEIds1IVzjoU');
+    final settingKey = (settings['razorpay_key_id'] as String?) ?? '';
+    final envKey = const String.fromEnvironment('RAZORPAY_KEY', defaultValue: '');
+    final rzpKey = settingKey.isNotEmpty
+        ? settingKey
+        : (envKey.isNotEmpty ? envKey : '');
+    if (rzpKey.isEmpty) {
+      setState(() {
+        _error =
+            'Online payment is temporarily unavailable. Please choose Cash on Delivery or retry shortly.';
+        _placing = false;
+      });
+      return;
+    }
     final options = {
       'key':         rzpKey,
       'amount':      (amount * 100).toInt(),
@@ -650,8 +709,10 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
     final settingsAsync = ref.watch(_publicSettingsProvider);
     final settings = settingsAsync.valueOrNull ?? const {
       'cod_charge': '50', 'delivery_charge': '59',
-      'free_delivery_above': '499', 'razorpay_enabled': 'true',
-      'razorpay_key_id': 'rzp_live_RdKEIds1IVzjoU',
+      'free_delivery_above': '499',
+      // Razorpay disabled by default when settings fail — see M-4 above.
+      'razorpay_enabled': 'false',
+      'razorpay_key_id': '',
     };
     final _sFreeAbove  = double.tryParse(
         settings['free_delivery_above']?.toString() ?? '499') ?? 499;
@@ -824,7 +885,14 @@ class _CheckoutScreenState extends ConsumerState<CheckoutScreen>
                     coinsBalance: coinsAsync.valueOrNull ?? 0,
                     fetchingCity: _fetchingCity,
                     pincodeMsg: _pincodeMsg,
-                    savedAddresses: ref.watch(_savedAddressesProvider).valueOrNull ?? [],
+                    savedAddresses: () {
+                      final list =
+                          ref.watch(_savedAddressesProvider).valueOrNull ?? [];
+                      // Auto-stamp the default address into the form on
+                      // first arrival so the user can skip the address step.
+                      _maybeApplyDefaultAddress(list);
+                      return list;
+                    }(),
                     onLoadAddress: _loadSavedAddress,
                     deliveryMessageFor: _deliveryMessageFor,
                     tycTemplateName: _tycTemplateName,
@@ -960,22 +1028,22 @@ class _StepContact extends StatelessWidget {
       children: [
         Row(children: [
           Container(
-            width: 40, height: 40,
+            width: 36, height: 36,
             decoration: BoxDecoration(
-              color: _kPurple.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(12),
+              color: _kPurple.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(10),
             ),
-            child: const Center(child: Text('👤', style: TextStyle(fontSize: 22))),
+            child: const Center(child: Text('👤', style: TextStyle(fontSize: 18))),
           ),
-          const Gap(12),
+          const Gap(10),
           Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('Who\'s ordering?', style: GoogleFonts.inter(
-              fontSize: 20, fontWeight: FontWeight.w800, color: _kText0)),
+              fontSize: 17, fontWeight: FontWeight.w800, color: _kText0)),
             Text('Your contact details', style: GoogleFonts.inter(
-              fontSize: 12, color: _kText2)),
+              fontSize: 11, color: _kText2)),
           ]),
         ]),
-        const Gap(22),
+        const Gap(16),
 
         // Full Name
         _FieldLabel('Full Name', required: true),
@@ -1156,22 +1224,22 @@ class _StepDelivery extends StatelessWidget {
       children: [
         Row(children: [
           Container(
-            width: 40, height: 40,
+            width: 36, height: 36,
             decoration: BoxDecoration(
-              color: _kAmber.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(12),
+              color: _kAmber.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(10),
             ),
-            child: const Center(child: Text('📦', style: TextStyle(fontSize: 22))),
+            child: const Center(child: Text('📦', style: TextStyle(fontSize: 18))),
           ),
-          const Gap(12),
+          const Gap(10),
           Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('Delivery address', style: GoogleFonts.inter(
-              fontSize: 20, fontWeight: FontWeight.w800, color: _kText0)),
+              fontSize: 17, fontWeight: FontWeight.w800, color: _kText0)),
             Text('Where should we send it?', style: GoogleFonts.inter(
-              fontSize: 12, color: _kText2)),
+              fontSize: 11, color: _kText2)),
           ]),
         ]),
-        const Gap(18),
+        const Gap(14),
 
         // Gift toggle card (always visible)
         _ToggleCard(
@@ -1232,20 +1300,20 @@ class _StepDelivery extends StatelessWidget {
             children: [
               if (isGift) ...[
                 _FieldLabel('Recipient\'s Name', required: true),
-                const Gap(6),
+                const Gap(5),
                 _InputField(ctrl: recipientCtrl, hint: 'Who\'s receiving the gift?'),
-                const Gap(14),
+                const Gap(11),
                 _FieldLabel('Recipient\'s Phone', required: true),
-                const Gap(6),
+                const Gap(5),
                 _InputField(ctrl: recipientPhone, hint: '10-digit number',
                     type: TextInputType.phone, maxLen: 10,
                     formatters: [FilteringTextInputFormatter.digitsOnly]),
-                const Gap(14),
+                const Gap(11),
               ],
 
               // Pincode
               _FieldLabel('Pincode', required: true),
-              const Gap(6),
+              const Gap(5),
               _InputField(ctrl: pincodeCtrl, hint: '6-digit pincode',
                   type: TextInputType.number, maxLen: 6,
                   formatters: [FilteringTextInputFormatter.digitsOnly]),
@@ -1254,13 +1322,13 @@ class _StepDelivery extends StatelessWidget {
                 Text(pincodeMsg!, style: GoogleFonts.inter(
                   fontSize: 11, color: _kBrand, fontWeight: FontWeight.w500)),
               ],
-              const Gap(14),
+              const Gap(11),
 
               // Address
               _FieldLabel('Address', required: true),
-              const Gap(6),
+              const Gap(5),
               _InputField(ctrl: addressCtrl, hint: 'House no., street, area'),
-              const Gap(14),
+              const Gap(11),
 
               // City + State — suffix loader while auto-fetching
               Row(children: [
@@ -1315,47 +1383,38 @@ class _StepDelivery extends StatelessWidget {
               fontSize: 11, fontWeight: FontWeight.w600, color: _kAmber),
           ),
         ],
-        const Gap(6),
-        // Note: preferred date is a request, not a guarantee
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: _kAmber.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: _kAmber.withValues(alpha: 0.25)),
-          ),
-          child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const Text('ℹ️', style: TextStyle(fontSize: 13)),
-            const SizedBox(width: 8),
-            Expanded(child: Text(
-              'This is just a preference. Actual delivery follows our '
-              'standard dispatch timeline regardless of the date selected.',
-              style: GoogleFonts.inter(
-                fontSize: 11, color: _kText1, height: 1.45),
-            )),
-          ]),
-        ),
-        const Gap(24),
+        // Note: preferred date is a request, not a guarantee.
+        // Collapsed from a full info box to a single compact line (saves ~55px).
+        const Gap(4),
+        Row(children: [
+          Icon(Icons.info_outline_rounded, size: 12, color: _kText2),
+          const SizedBox(width: 4),
+          Expanded(child: Text(
+            'Preferred date is a request, not a guarantee',
+            style: GoogleFonts.inter(fontSize: 10.5, color: _kText2),
+          )),
+        ]),
+        const Gap(20),
 
         // ── Add-ons section ───────────────────────────────────────────────
         Row(children: [
           Container(
-            width: 34, height: 34,
+            width: 30, height: 30,
             decoration: BoxDecoration(
-              color: _kBrand.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(10),
+              color: _kBrand.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(8),
             ),
-            child: const Center(child: Text('✨', style: TextStyle(fontSize: 18))),
+            child: const Center(child: Text('✨', style: TextStyle(fontSize: 15))),
           ),
-          const Gap(10),
+          const Gap(9),
           Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('Add-ons', style: GoogleFonts.inter(
-              fontSize: 16, fontWeight: FontWeight.w800, color: _kText0)),
+              fontSize: 14, fontWeight: FontWeight.w800, color: _kText0)),
             Text('Make it extra special', style: GoogleFonts.inter(
-              fontSize: 11, color: _kText2)),
+              fontSize: 10, color: _kText2)),
           ]),
         ]),
-        const Gap(12),
+        const Gap(10),
 
         // Add Gift Wrap
         _AddonCard(

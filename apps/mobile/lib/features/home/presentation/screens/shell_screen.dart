@@ -9,6 +9,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../../../../core/api/api_client.dart';
 import '../../../../core/services/audio_service.dart';
 import '../../../../l10n/generated/app_localizations.dart';
+import '../../../auth/presentation/screens/auth_screen.dart';
 
 // Cart item count provider — drives the red badge on the CART tab
 final cartItemCountProvider = FutureProvider.autoDispose<int>((ref) async {
@@ -50,13 +51,35 @@ const _kActiveColor   = Color(0xFFEF3752);
 const _kInactiveColor = Color(0xFF8E8E93);
 
 // ─── ShellScreen ─────────────────────────────────────────────────────────────
+//
+// Watches auth state so sign-out doesn't require navigating away from the
+// shell — when the token clears, we render AuthScreen inline in place of
+// the shell + bottom nav. This sidesteps the Samsung Fold 7 black-screen
+// bug entirely (which only triggers on the GoRouter shell→root transition).
+//
+// The shell branches remain mounted underneath (StatefulShellRoute keeps
+// them alive), so navigating back into the shell after sign-in is instant.
+// The router's `redirect` still handles direct deep-link attempts to
+// shell routes when logged out — this is just the visual cover for the
+// case where the user signs out from inside the shell.
 
-class ShellScreen extends StatelessWidget {
+class ShellScreen extends ConsumerWidget {
   final StatefulNavigationShell shell;
   const ShellScreen({super.key, required this.shell});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isLoggedIn =
+        ref.watch(authTokenNotifierProvider).valueOrNull != null;
+    final isGuest =
+        ref.watch(guestModeNotifierProvider).valueOrNull ?? false;
+
+    // Guests are allowed inside the shell (Apple App Store Review 5.1.1(v)).
+    // Only fall back to AuthScreen if the user is BOTH logged out AND has
+    // not opted into guest browsing. This is rare — splash already routes
+    // appropriately — but acts as a safety net for direct deep-link cases.
+    if (!isLoggedIn && !isGuest) return const AuthScreen();
+
     return Scaffold(
       body: shell,
       bottomNavigationBar: _GNavBar(

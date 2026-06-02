@@ -122,24 +122,21 @@ export class OrdersService {
   }
 
   async getById(id: string, caller: CallerContext) {
-    const order = await this.prisma.order.findUnique({
-      where: { id },
-      include: {
-        items: true,
-        shipments: true,
-        // Customer panel on the admin order page needs name + email +
-        // phone + their lifetime order count to render the "1st order /
-        // returning customer" hint. We pull customer eagerly and count
-        // their orders separately so the row isn't 50 KB heavier per
-        // admin fetch.
-        customer: {
-          select: {
-            id: true, fullName: true, email: true, phone: true,
-            createdAt: true, metadata: true,
-          },
+    const include = {
+      items: true,
+      shipments: true,
+      customer: {
+        select: {
+          id: true, fullName: true, email: true, phone: true,
+          createdAt: true, metadata: true,
         },
       },
-    });
+    } as const;
+
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+    const order = isUuid
+      ? await this.prisma.order.findUnique({ where: { id }, include })
+      : await this.prisma.order.findFirst({ where: { orderNumber: id }, include });
     if (!order) throw new NotFoundException();
     this.assertVisible(order, caller);
 
@@ -952,6 +949,29 @@ export class OrdersService {
         );
       }
       editsByItemId.set(e.id, { qty: e.qty, remove: e.remove });
+    }
+
+    // Pre-flight: refuse to touch a line that has an open return
+    // request. Allowing it would either orphan the RMA (FK now
+    // SET NULLs the orderItemId, but the customer-facing "I asked
+    // for a return on item X" history loses meaning) or silently
+    // cancel the customer's RMA — both are bad UX.
+    const editedIds = [...editsByItemId.keys()];
+    if (editedIds.length > 0) {
+      const openRmas = await this.prisma.returnRequest.findMany({
+        where: {
+          orderItemId: { in: editedIds },
+          status: { notIn: ["rejected", "cancelled", "refunded"] },
+        },
+        select: { id: true, orderItemId: true, status: true },
+      });
+      if (openRmas.length > 0) {
+        const ids = openRmas.map((r) => r.id.slice(0, 8) + "…").join(", ");
+        throw new BadRequestException(
+          `Cannot edit line items with open return requests (${ids}). ` +
+          `Resolve the returns first (approve / reject / refund), then edit.`,
+        );
+      }
     }
 
     // Pre-flight stock check for qty increases.

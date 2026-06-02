@@ -468,26 +468,26 @@ class _EmptyReviews extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      child: Column(children: [
-        const Text('✨', style: TextStyle(fontSize: 40)),
-        const Gap(8),
-        Text('Be the first to review this gift',
-          style: GoogleFonts.inter(
-            fontSize: 13, fontWeight: FontWeight.w600, color: textSecondary)),
-        const Gap(12),
+      child: Row(children: [
+        Expanded(
+          child: Text('No reviews yet. Be the first!',
+            style: GoogleFonts.inter(
+              fontSize: 12, color: textSecondary)),
+        ),
+        const Gap(10),
         GestureDetector(
           onTap: onWrite,
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
             decoration: BoxDecoration(
               color: GColors.brand,
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(10),
             ),
             child: Row(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.edit_outlined, size: 16, color: Colors.white),
-              const Gap(6),
-              Text('Write a Review', style: GoogleFonts.inter(
-                fontSize: 13, fontWeight: FontWeight.w800, color: Colors.white)),
+              const Icon(Icons.edit_outlined, size: 13, color: Colors.white),
+              const Gap(4),
+              Text('Review', style: GoogleFonts.inter(
+                fontSize: 12, fontWeight: FontWeight.w700, color: Colors.white)),
             ]),
           ),
         ),

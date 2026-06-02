@@ -243,8 +243,12 @@ export default function AdminFreeGift() {
   // ── Products ────────────────────────────────────────────────────────────
   const fetchAllProducts = async () => {
     setLoadingProducts(true);
+    // Admin endpoint — returns ALL products including drafts and b2c-
+    // disabled rows. The public /products endpoint filters by
+    // `b2cEnabled: true`, which is why this list previously came back
+    // empty for stores whose products were still drafts.
     const data = await safeGet<{ items?: RawProduct[] } | RawProduct[]>(
-      "/products?pageSize=500",
+      "/products/admin/list?pageSize=500&page=1",
       [],
     );
     const raw: RawProduct[] = Array.isArray(data)

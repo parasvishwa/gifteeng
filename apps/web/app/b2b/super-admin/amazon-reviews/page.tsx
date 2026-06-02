@@ -63,7 +63,9 @@ export default function AdminAmazonReviews() {
 
   useEffect(() => {
     (async () => {
-      const data = await safeGet<{ items: any[] }>("/products?pageSize=200", { items: [] });
+      // Admin endpoint — includes drafts + b2c-disabled products. Public
+      // /products filters on b2cEnabled: true so the picker came back empty.
+      const data = await safeGet<{ items: any[] }>("/products/admin/list?pageSize=200&page=1", { items: [] });
       setProducts((data?.items as any[]) || []);
     })();
   }, []);

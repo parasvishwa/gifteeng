@@ -134,6 +134,20 @@ const formatFileSize = (bytes: number) => {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+// Compress an image while preserving transparency. The previous version
+// always called `toBlob(..., "image/jpeg")` which (a) flattens the alpha
+// channel onto an opaque canvas background and (b) ignores the source
+// format — so PNG icons came back as black-background JPGs.
+//
+// New behaviour:
+//   • PNG in  → PNG out (lossless, alpha preserved). `quality` is mostly
+//     ignored by the canvas spec for PNG, but we still resize.
+//   • WebP in → WebP out (also supports alpha; quality respected).
+//   • Anything else (JPG / HEIC / etc.) → JPG out at the requested quality.
+//
+// Returns the new Blob with its `type` correctly set so the upload payload
+// preserves the right MIME and downstream consumers (file picker thumbs,
+// browser <img>) treat it as the right format.
 const compressImage = (blob: Blob, quality: number, maxWidth = 1200): Promise<Blob> =>
   new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -144,8 +158,26 @@ const compressImage = (blob: Blob, quality: number, maxWidth = 1200): Promise<Bl
         let w = img.width, h = img.height;
         if (w > maxWidth) { h = Math.round((h * maxWidth) / w); w = maxWidth; }
         canvas.width = w; canvas.height = h;
-        canvas.getContext("2d")!.drawImage(img, 0, 0, w, h);
-        canvas.toBlob(r => r ? resolve(r) : reject(new Error("Compression failed")), "image/jpeg", quality);
+        const ctx = canvas.getContext("2d")!;
+        // Don't pre-fill the canvas — leaving it transparent means PNG /
+        // WebP outputs retain alpha. JPG output will fall back to black
+        // for transparent pixels (acceptable, since the operator chose
+        // JPG by uploading a JPG).
+        ctx.drawImage(img, 0, 0, w, h);
+        // Pick output format from the input MIME — keep alpha-bearing
+        // formats lossless, only re-encode JPG-family as JPG.
+        const inputType = (blob.type || "").toLowerCase();
+        const outputType =
+          inputType.includes("png")  ? "image/png"  :
+          inputType.includes("webp") ? "image/webp" :
+          "image/jpeg";
+        // `quality` is only honoured for jpeg + webp by the canvas spec.
+        // PNG always writes lossless; passing quality is harmless.
+        canvas.toBlob(
+          (r) => (r ? resolve(r) : reject(new Error("Compression failed"))),
+          outputType,
+          quality,
+        );
       };
       img.onerror = () => reject(new Error("Image load failed"));
       img.src = reader.result as string;
@@ -391,9 +423,22 @@ export default function AdminFiles() {
         const saved = originalSize - compressed.size;
 
         if (saved > 1000) {
-          // PATCH in-place — replaces the same file record
+          // Compressed Blob now carries the correct MIME — PNG stays PNG,
+          // WebP stays WebP, only JPG-family is re-encoded as JPG. Build
+          // the upload filename with the matching extension so the
+          // backend stores it with the right ContentType.
+          const outMime = compressed.type || "image/jpeg";
+          const newExt =
+            outMime === "image/png"  ? ".png"  :
+            outMime === "image/webp" ? ".webp" :
+            ".jpg";
+          // Strip any existing extension and append the new one — covers
+          // the case where a PNG was uploaded as foo.png and stays foo.png.
+          const baseName = f.name.replace(/\.[a-z0-9]+$/i, "");
+          const newName  = `${baseName}${newExt}`;
+
           const fd = new FormData();
-          fd.append("file", new File([compressed], f.name, { type: "image/jpeg" }));
+          fd.append("file", new File([compressed], newName, { type: outMime }));
           const upRes = await fetch(`${getApiBase()}/api/files/${encodeURIComponent(f.id)}/replace`, {
             method: "PATCH", headers: authHeaders(), body: fd,
           });
@@ -401,10 +446,9 @@ export default function AdminFiles() {
             const updated = await upRes.json();
             totalSaved += saved;
             successCount++;
-            // Update local state so size shows correctly immediately
             setFiles(prev => prev.map(x =>
               x.id === f.id
-                ? { ...x, metadata: { size: updated.sizeBytes ?? compressed.size, mimetype: "image/jpeg" } }
+                ? { ...x, metadata: { size: updated.sizeBytes ?? compressed.size, mimetype: outMime } }
                 : x
             ));
             setCompressLog(`${f.name}: saved ${formatFileSize(saved)}`);

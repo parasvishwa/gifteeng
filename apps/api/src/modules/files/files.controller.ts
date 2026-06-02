@@ -21,6 +21,7 @@ import type { Response } from "express";
 import { FilesService } from "./files.service";
 import { JwtB2cGuard } from "../../common/guards/jwt-b2c.guard";
 import { JwtB2bGuard } from "../../common/guards/jwt-b2b.guard";
+import { PrismaService } from "../../prisma/prisma.service";
 import * as jwt from "jsonwebtoken";
 
 // ── Upload guardrails (security session79) ─────────────────────────────────
@@ -62,10 +63,23 @@ function assertSafeMime(mime: string): void {
   }
 }
 
+// Per-cart-session daily upload budget — 100 MB / 24 h. Sized to comfortably
+// cover any realistic customizer flow (a handful of high-res images) without
+// letting a single rotating session ID become a free image host. See
+// SECURITY_AUDIT.md M-1.
+const GUEST_DAILY_BUDGET_BYTES = 100 * 1024 * 1024;
+
 @ApiTags("files")
 @Controller("files")
 export class FilesController {
-  constructor(private service: FilesService) {}
+  // In-memory daily-budget tracker keyed by sessionKey. Resets per worker on
+  // restart (acceptable — workers cycle through a deploy and the cap is not
+  // a hard security boundary, it's a quota knob). For multi-worker
+  // production setups we'd swap this for Redis; the API box currently runs
+  // one worker per Contabo node so this is fine.
+  private static budget = new Map<string, { resetAt: number; usedBytes: number }>();
+
+  constructor(private service: FilesService, private prisma: PrismaService) {}
 
   /**
    * Admin-only listing. Was previously unguarded; now requires a B2B JWT.
@@ -96,11 +110,11 @@ export class FilesController {
     @Body("ownerType") ownerType?: string,
   ) {
     if (!file) throw new BadRequestException("Missing file in form-data field 'file'.");
-    // Auth — accept either b2c or b2b token. Validate the bearer token
-    // ourselves rather than mount two competing guards.
-    if (!await this.hasAnyAuth(req)) {
+    // Auth — accept either b2c or b2b token, or a real X-Cart-Session under
+    // its daily budget. Pass fileSize so the guest budget tracker can debit.
+    if (!await this.hasAnyAuth(req, file.size ?? 0)) {
       throw new UnauthorizedException(
-        "Upload requires a logged-in customer or admin.",
+        "Upload requires a logged-in customer or admin (or a valid cart session under its daily budget).",
       );
     }
     assertSafeMime(file.mimetype);
@@ -172,15 +186,41 @@ export class FilesController {
   // ── helpers ──────────────────────────────────────────────────────────
 
   /**
-   * Allow the upload when the request carries either:
-   *   - a valid B2C JWT signed with JWT_B2C_SECRET, or
-   *   - a valid B2B JWT signed with JWT_B2B_SECRET.
+   * Allow the upload when the request carries any of:
+   *   1. A valid B2C JWT signed with JWT_B2C_SECRET (logged-in customer)
+   *   2. A valid B2B JWT signed with JWT_B2B_SECRET (admin)
+   *   3. An `X-Cart-Session` header that corresponds to a REAL cart row
+   *      AND that session is under its 100 MB / 24 h daily upload budget.
    *
-   * We verify the signature ourselves with `jwt.verify` because Nest's
-   * AuthGuard chain doesn't natively support "any one of these passes".
-   * Returns true on first successful verification.
+   * (1) and (2) verify cryptographically. (3) was previously trivially
+   * forgeable — any random UUID-shaped string was accepted, letting bots
+   * fill the disk by rotating session IDs (SECURITY_AUDIT.md M-1). We now
+   * gate guest uploads on:
+   *   - a row in `carts` with `sessionKey = <header>` actually existing
+   *     (proves the client went through the normal cart-create flow), AND
+   *   - the running per-session daily byte total still being under the
+   *     budget for this calendar day.
+   *
+   * Returns true on first successful check.
    */
-  private async hasAnyAuth(req: any): Promise<boolean> {
+  private async hasAnyAuth(req: any, fileSize = 0): Promise<boolean> {
+    // Guest path: X-Cart-Session must map to a real cart, and the session
+    // must be within budget.
+    const cartSession = req?.headers?.["x-cart-session"];
+    if (typeof cartSession === "string" && cartSession.length >= 8 && cartSession.length <= 128) {
+      const exists = await this.prisma.cart.findUnique({
+        where: { sessionKey: cartSession },
+        select: { id: true },
+      });
+      if (exists && this.consumeGuestBudget(cartSession, fileSize)) {
+        return true;
+      }
+      // Fall through to bearer-token path — a logged-in customer's web app
+      // may still send X-Cart-Session for cart-merge but their JWT is the
+      // real authorization.
+    }
+
+    // Authed path: verify the bearer token against either JWT secret.
     const auth = req?.headers?.authorization ?? req?.headers?.Authorization;
     if (typeof auth !== "string" || !auth.toLowerCase().startsWith("bearer ")) {
       return false;
@@ -198,5 +238,25 @@ export class FilesController {
       } catch { /* try next */ }
     }
     return false;
+  }
+
+  /**
+   * Track per-session byte usage in a 24-hour rolling window. Returns
+   * true if the requested fileSize fits in the remaining budget (and
+   * deducts it), false if the cap is reached.
+   */
+  private consumeGuestBudget(sessionKey: string, fileSize: number): boolean {
+    const now = Date.now();
+    const bucket = FilesController.budget.get(sessionKey);
+    if (!bucket || bucket.resetAt < now) {
+      FilesController.budget.set(sessionKey, {
+        resetAt: now + 24 * 60 * 60 * 1000,
+        usedBytes: fileSize,
+      });
+      return fileSize <= GUEST_DAILY_BUDGET_BYTES;
+    }
+    if (bucket.usedBytes + fileSize > GUEST_DAILY_BUDGET_BYTES) return false;
+    bucket.usedBytes += fileSize;
+    return true;
   }
 }

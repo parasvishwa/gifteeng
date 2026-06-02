@@ -11,21 +11,30 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/gift_image.dart';
+import '../../../../core/widgets/floating_cart_bar.dart';
+import '../../../../core/widgets/delivery_zone_banner.dart';
+import '../../../../core/widgets/delivery_zone_popup.dart';
 import '../../../../core/widgets/g_button.dart';
 import '../widgets/home_sections.dart';
+import '../widgets/home_product_card.dart';
 import '../widgets/event_reminder_banner.dart';
 import '../widgets/testimonials_section.dart';
+import '../widgets/gift_reels_section.dart';
 import '../widgets/occasion_chips.dart';
 import '../widgets/category_bento.dart';
 import '../widgets/marketplace_stores_section.dart';
+import '../widgets/ugc_section.dart';
 import '../../../../core/widgets/coin_fly.dart';
 import '../../../../core/widgets/birthday_city_popup.dart';
 import '../../../../core/widgets/milestone_popup.dart';
-import 'package:animated_digit/animated_digit.dart';
 import '../../../../core/api/api_client.dart';
 import '../../../../core/services/audio_service.dart';
 import '../../../../core/state/app_state.dart';
 import '../../../../core/analytics/analytics_service.dart';
+import '../../data/homepage_config_repository.dart';
+// profileProvider — lets the home greeting display the logged-in customer's
+// first name ("Hi Ananya 👋") instead of a generic placeholder.
+import '../../../account/presentation/screens/account_screen.dart' show profileProvider;
 
 // ─── Providers ────────────────────────────────────────────────────────────────
 
@@ -42,16 +51,28 @@ final _homeFeaturedProvider =
   return [];
 });
 
-final _homeTrendingProvider =
+/// Curated / personalised picks — tries `/products?personalized=true` first,
+/// falls back to /products?sort=recommended, then newest. Ensures the section
+/// always has content even before the recommendation engine is live.
+final _homeCuratedProvider =
     FutureProvider.autoDispose<List<Map<String, dynamic>>>((ref) async {
   final dio = ref.watch(dioProvider);
-  try {
-    final res = await dio.get('/products',
-        queryParameters: {'pageSize': 8, 'sort': 'popular', 'status': 'active'});
-    final data = res.data;
-    if (data is Map) return List<Map<String, dynamic>>.from(data['items'] ?? []);
-    if (data is List) return List<Map<String, dynamic>>.from(data);
-  } catch (_) {}
+  for (final params in [
+    {'pageSize': 10, 'personalized': 'true', 'status': 'active'},
+    {'pageSize': 10, 'sort': 'recommended', 'status': 'active'},
+    {'pageSize': 10, 'sort': 'newest', 'status': 'active'},
+  ]) {
+    try {
+      final res = await dio.get('/products', queryParameters: params);
+      final data = res.data;
+      final list = data is Map
+          ? List<Map<String, dynamic>>.from(data['items'] ?? [])
+          : data is List
+              ? List<Map<String, dynamic>>.from(data)
+              : <Map<String, dynamic>>[];
+      if (list.isNotEmpty) return list;
+    } catch (_) {}
+  }
   return [];
 });
 
@@ -160,6 +181,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // Maybe show the birthday + city popup (skipped for anonymous, dismissed
     // users, and users who already filled both fields). Fires after a 6s delay.
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      // First-launch delivery-zone picker — replaces the old GPS-only
+      // "Tap to detect delivery zone" banner with a one-tap Mumbai /
+      // Other-than-Mumbai chooser. Skipped once the user has already
+      // saved a choice (stored in SharedPreferences).
+      DeliveryZonePopup.maybeShowOnce(context, ref);
       maybeShowBirthdayCityPopup(ref, context);
       // Milestone celebration — fires once per claim. Short delay so confetti
       // lands AFTER the home screen finishes its initial fade-in.
@@ -186,11 +212,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   Widget build(BuildContext context) {
     final topPad    = MediaQuery.of(context).padding.top;
     final balance   = ref.watch(coinBalanceProvider).valueOrNull ?? 0;
+    // Pull admin's homepage-builder config so toggling a section in
+    // /super-admin/homepage-content actually hides it here too. Falls back
+    // to `HomepageConfig.empty` (everything visible) on transient errors.
+    final homeCfg = ref.watch(homepageConfigProvider).valueOrNull
+        ?? HomepageConfig.empty;
+    // Local helper — keeps the section-rendering block readable below.
+    bool _show(String type) => homeCfg.isMobileVisible(type);
 
     final _c = GColors.of(context);
     return Scaffold(
       backgroundColor: _c.bg0,
-      body: RefreshIndicator(
+      body: Stack(
+        children: [
+          // ── Main scrollable content ──────────────────────────────────────
+          RefreshIndicator(
         color: GColors.brand,
         onRefresh: () async {
           // Invalidate every home-screen provider so a pull yields fresh data
@@ -198,8 +234,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ref.invalidate(_heroBannersProvider);
           ref.invalidate(_homeCategoriesProvider);
           ref.invalidate(_homeFeaturedProvider);
-          ref.invalidate(_homeTrendingProvider);
+          ref.invalidate(_homeCuratedProvider);
           ref.invalidate(coinBalanceProvider);
+          // Pick up any admin section-visibility changes made since last load.
+          ref.invalidate(homepageConfigProvider);
           // Wait for the most "felt" provider so the spinner doesn't snap.
           await ref.read(_homeFeaturedProvider.future);
         },
@@ -220,84 +258,151 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
           ),
 
+          // ── Personalised greeting ───────────────────────────────────────
+          // "Hi <FirstName> 👋" + "Find the perfect gift today ✨" — matches
+          // the home-screen mockup. Falls back to "there" when the customer
+          // is logged out / hasn't set a name.
+          const SliverToBoxAdapter(child: _GreetingBlock()),
+
           // ── Search bar ──────────────────────────────────────────────────
           SliverToBoxAdapter(child: _SearchBar()),
 
-          // ── Hero carousel ───────────────────────────────────────────────
-          SliverToBoxAdapter(
-            child: _HeroCarousel(
-              ctrl: _heroPageCtrl,
-              page: _heroPage,
-              onPageChanged: (p) => setState(() => _heroPage = p),
+          // ── Delivery zone banner (location-aware) ───────────────────────
+          const SliverToBoxAdapter(child: DeliveryZoneBanner()),
+
+          // ── Smart Reminders — near top for daily retention ──────────────
+          // Moved above the hero: upcoming occasions (Father's Day, anniversaries
+          // etc.) are the strongest reason to open the app again tomorrow.
+          // Buried at the bottom they were invisible; here they're actionable.
+          if (_show('smart-reminders')) ...[
+            // No _HSep here — the delivery banner already creates enough
+            // visual breathing room above. Adding a 44px gradient divider
+            // produced an obvious empty band on tall screens (Fold 7).
+            const SliverToBoxAdapter(child: SizedBox(height: 12)),
+            const SliverToBoxAdapter(child: _SmartRemindersCard()),
+          ],
+
+          // ── Hero carousel (admin banners or 3 hardcoded fallbacks) ───────
+          // Section type `hero` in the builder controls this strip.
+          if (_show('hero'))
+            SliverToBoxAdapter(
+              child: _HeroCarousel(
+                ctrl: _heroPageCtrl,
+                page: _heroPage,
+                onPageChanged: (p) => setState(() => _heroPage = p),
+              ),
             ),
-          ),
 
-          // ── Trust bar ───────────────────────────────────────────────────
-          const SliverToBoxAdapter(child: _TrustBar()),
-
-          // ── Category Tab Bar — horizontal icon chips ──────────────────────
-          SliverToBoxAdapter(
-            child: _CategoryTabBar(onCatTap: _goToShopWithCategory),
-          ),
-
-          // ── Event reminder banner (dynamic from /announcements) ──────────
-          const SliverToBoxAdapter(child: EventReminderBanner()),
-
-          // ── AI Gift Finder ──────────────────────────────────────────────
-          const SliverToBoxAdapter(child: _AiFinderCard()),
-
-          // ── Shop by Occasion (intent-first discovery) ───────────────────
-          const SliverToBoxAdapter(child: OccasionChips()),
-
-          // ── Shop by Category (product-preview bento) ────────────────────
-          SliverToBoxAdapter(
-            child: CategoryBento(onCatTap: _goToShopWithCategory),
-          ),
-
-          // ── Quick-browse row removed from Home — now lives on Shop screen
-          // (immediately below the search + category strip) so the home feed
-          // stays focused on hero / discovery, not navigation.
-
-          // ── New Arrivals ────────────────────────────────────────────────
-          SliverToBoxAdapter(
-            child: _ProductStrip(
-              title:    'New Arrivals',
-              provider: _homeFeaturedProvider,
+          // ── Category tab bar (horizontal icon chips → shop filtered) ────────
+          // _CategoryTabBar is gated on the same `shop-by-category` toggle so
+          // admins can hide both category surfaces at once from the builder.
+          if (_show('shop-by-category')) ...[
+            const SliverToBoxAdapter(child: _HSep()),
+            SliverToBoxAdapter(
+              child: _CategoryTabBar(onCatTap: _goToShopWithCategory),
             ),
-          ),
+          ],
 
-          // ── Best Sellers (ranked top products) ──────────────────────────
-          const SliverToBoxAdapter(child: BestSellersSection()),
+          // ── Shop by Occasion ─────────────────────────────────────────────
+          // Builder type `shop-by-category` covers both the occasion chips
+          // and the categories bento — they're parallel "browse by" entries.
+          if (_show('shop-by-category')) ...const [
+            SliverToBoxAdapter(child: _HSep()),
+            SliverToBoxAdapter(child: OccasionChips()),
+            SliverToBoxAdapter(child: _HSep()),
+          ],
 
-          // ── Trending Gifts ──────────────────────────────────────────────
-          SliverToBoxAdapter(
-            child: _ProductStrip(
-              title:    'Trending',
-              provider: _homeTrendingProvider,
+          // ── New Arrivals ─────────────────────────────────────────────────
+          // Builder `product-row` with source=new-arrivals.
+          if (_show('product-row')) ...[
+            SliverToBoxAdapter(
+              child: _ProductStrip(
+                title:    homeCfg.titleFor('product-row') ?? 'New Arrivals 🆕',
+                provider: _homeFeaturedProvider,
+              ),
             ),
-          ),
+            const SliverToBoxAdapter(child: _HSep()),
+
+            // ── Curated for You (personalised picks) ─────────────────────
+            SliverToBoxAdapter(
+              child: _ProductStrip(
+                title:    'Curated for You ✨',
+                provider: _homeCuratedProvider,
+              ),
+            ),
+            const SliverToBoxAdapter(child: _HSep()),
+
+            // ── Best Sellers ─────────────────────────────────────────────
+            const SliverToBoxAdapter(child: BestSellersSection()),
+            const SliverToBoxAdapter(child: _HSep()),
+          ],
+
+          // ── Shop by Category bento ──────────────────────────────────────
+          if (_show('shop-by-category')) ...[
+            SliverToBoxAdapter(
+              child: CategoryBento(onCatTap: _goToShopWithCategory),
+            ),
+            const SliverToBoxAdapter(child: _HSep()),
+          ],
 
           // ── Earn Goins card ─────────────────────────────────────────────
-          const SliverToBoxAdapter(child: _GoinsCard()),
+          // Builder section `gamification-widget` controls this card.
+          // Balance is passed in so the card shows actionable copy when the
+          // user actually has Goins ("Redeem 950G now" vs "Start Earning").
+          if (_show('gamification-widget')) ...[
+            SliverToBoxAdapter(child: _GoinsCard(balance: balance)),
+            const SliverToBoxAdapter(child: _HSep()),
+          ],
+
+          // ── Gift Casino promo (daily-return hook) ────────────────────────
+          // Moved above Corporate: spin/scratch is a daily-visit driver;
+          // corporate is a B2B discovery surface most consumers skip.
+          if (_show('spin-wheel')) ...const [
+            SliverToBoxAdapter(child: _CasinoBanner()),
+            SliverToBoxAdapter(child: _HSep()),
+          ],
 
           // ── Corporate Gifts (B2B banner) ────────────────────────────────
-          const SliverToBoxAdapter(child: CorporateGiftsSection()),
+          if (_show('return-gifts')) ...const [
+            SliverToBoxAdapter(child: CorporateGiftsSection()),
+            SliverToBoxAdapter(child: _HSep()),
+          ],
 
-          // ── Gift Casino promo ───────────────────────────────────────────
-          const SliverToBoxAdapter(child: _CasinoBanner()),
+          // ── UGC wall ────────────────────────────────────────────────────
+          // Builder type `testimonials` is the parallel — both surface real
+          // customer content. Admin can keep one or both.
+          if (_show('testimonials')) ...const [
+            SliverToBoxAdapter(child: UgcSection()),
+            SliverToBoxAdapter(child: _HSep()),
+          ],
 
-          // ── Marketplace stores (Amazon, Flipkart, Meesho…) ──────────────
-          const SliverToBoxAdapter(child: MarketplaceStoresSection()),
+          // ── Marketplace stores ──────────────────────────────────────────
+          // No direct builder type — gate on `features-grid` until we add one.
+          if (_show('features-grid')) ...const [
+            SliverToBoxAdapter(child: MarketplaceStoresSection()),
+            SliverToBoxAdapter(child: _HSep()),
+          ],
 
           // ── Testimonials ────────────────────────────────────────────────
-          const SliverToBoxAdapter(child: TestimonialsSection()),
+          if (_show('testimonials')) ...const [
+            SliverToBoxAdapter(child: TestimonialsSection()),
+            SliverToBoxAdapter(child: _HSep()),
+          ],
 
-          // ── AI Smart Reminders ──────────────────────────────────────────
-          const SliverToBoxAdapter(child: _SmartRemindersCard()),
+          // ── Gift Reels — short-form video inspiration sourced from
+          // /super-admin/videos. Same data the web home page consumes.
+          if (_show('testimonials')) ...const [
+            SliverToBoxAdapter(child: GiftReelsSection()),
+            SliverToBoxAdapter(child: _HSep()),
+          ],
 
-          const SliverToBoxAdapter(child: SizedBox(height: 120)),
+          const SliverToBoxAdapter(child: SizedBox(height: 24)),
         ],
       ),
+      ),
+          // ── Compact floating cart pill (bottom-right, dismissable) ──
+          const FloatingCartBar(bottomOffset: 12),
+        ],
       ),
     );
   }
@@ -376,18 +481,19 @@ class _AppBarDelegate extends SliverPersistentHeaderDelegate {
                   children: [
                     Icon(Icons.toll_outlined, size: 14, color: GColors.gold),
                     const Gap(4),
-                    AnimatedDigitWidget(
-                      value: balance,
-                      duration: const Duration(milliseconds: 900),
-                      curve: Curves.easeOutCubic,
-                      enableSeparator: true,
-                      textStyle: GoogleFonts.inter(
-                        fontSize: 12, fontWeight: FontWeight.w800,
-                        color: GColors.gold,
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 400),
+                      transitionBuilder: (child, anim) => ScaleTransition(
+                        scale: anim, child: child),
+                      child: Text(
+                        key: ValueKey('bal-$balance'),
+                        balance.toString(),
+                        style: GoogleFonts.inter(
+                          fontSize: 12, fontWeight: FontWeight.w800,
+                          color: GColors.gold,
+                        ),
                       ),
-                    ).animate(key: ValueKey('home-bal-$balance'))
-                        .scaleXY(begin: 0.88, end: 1.0, duration: 350.ms,
-                            curve: Curves.elasticOut),
+                    ),
                     Text(' G',
                       style: GoogleFonts.inter(
                         fontSize: 12, fontWeight: FontWeight.w800,
@@ -419,6 +525,67 @@ class _AppBarDelegate extends SliverPersistentHeaderDelegate {
   @override
   bool shouldRebuild(_AppBarDelegate o) =>
       o.balance != balance || o.topPad != topPad;
+}
+
+// ─── Greeting block ─────────────────────────────────────────────────────────
+//
+// "Hi <FirstName> 👋" + "Find the perfect gift today ✨" sits between the
+// pinned app bar and the search bar. The first-name is pulled from
+// /auth/b2c/me via the shared `profileProvider`; if the customer is
+// signed-out or hasn't set a name we fall back to "there" so the line
+// never reads "Hi !".
+class _GreetingBlock extends ConsumerWidget {
+  const _GreetingBlock();
+
+  String _firstNameFrom(Map<String, dynamic>? profile) {
+    if (profile == null) return "there";
+    // Prefer fullName (Google / Apple sign-in fill this) then the email
+    // local-part as a graceful fallback ("ananya123@gmail.com" → "ananya123").
+    final raw = (profile['fullName'] as String?)?.trim()
+        ?? ((profile['email'] as String?)?.split('@').first ?? '');
+    if (raw.isEmpty) return "there";
+    // Take just the first token + title-case it.
+    final first = raw.split(RegExp(r'\s+')).first;
+    if (first.isEmpty) return "there";
+    return first[0].toUpperCase() + first.substring(1);
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final c = GColors.of(context);
+    final profileAsync = ref.watch(profileProvider);
+    final name = _firstNameFrom(profileAsync.valueOrNull);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // First line — "Hi Ananya 👋" in a softer/lighter weight.
+          Text(
+            "Hi $name 👋",
+            style: GoogleFonts.inter(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: c.text1,
+            ),
+          ),
+          const Gap(4),
+          // Tagline — bigger, bolder, matches the mockup's pull quote.
+          Text(
+            "Find the perfect gift today ✨",
+            style: GoogleFonts.inter(
+              fontSize: 22,
+              fontWeight: FontWeight.w900,
+              color: c.text0,
+              letterSpacing: -0.5,
+              height: 1.15,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 // ─── Search bar ───────────────────────────────────────────────────────────────
@@ -556,41 +723,68 @@ class _AnimatedSearchHintState extends State<_AnimatedSearchHint> {
   }
 }
 
-// ─── Trust bar ────────────────────────────────────────────────────────────────
-
-class _TrustBar extends StatelessWidget {
-  const _TrustBar();
-
-  static const _items = [
-    (Icons.local_shipping_outlined,  'Fast Delivery'),
-    (Icons.refresh_outlined,         'Easy Returns'),
-    (Icons.verified_outlined,        'Quality Check'),
-    (Icons.card_giftcard_outlined,   'Gift Wrapping'),
-  ];
-
+// ─── Elegant section separator ───────────────────────────────────────────────
+// Fixed 33 px tall so the 1 px line sits exactly in the middle:
+//   16 px gap above  |  1 px line  |  16 px gap below
+// Every section widget must have zero top padding — spacing lives here only.
+class _HSep extends StatelessWidget {
+  const _HSep();
   @override
   Widget build(BuildContext context) {
-    final c = GColors.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-      child: Row(
-        children: _items.map((item) => Expanded(
-          child: Column(children: [
-            Icon(item.$1, size: 18, color: GColors.brand.withValues(alpha: 0.7)),
-            const Gap(4),
-            Text(item.$2, textAlign: TextAlign.center,
-              style: GoogleFonts.inter(
-                fontSize: 9, color: c.text2,
-                fontWeight: FontWeight.w500, height: 1.3)),
-          ]),
-        )).toList(),
+    return SizedBox(
+      height: 44,
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Container(
+            height: 1,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  Colors.transparent,
+                  GColors.brand.withValues(alpha: 0.22),
+                  Colors.transparent,
+                ],
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
 }
 
-
 // ─── Hero carousel ─────────────────────────────────────────────────────────────
+// Loads banners from /banners?placement=home (admin-configurable).
+// Falls back to 3 hardcoded gradient banners when the API returns empty.
+
+// Hardcoded fallback banners shown when admin hasn't uploaded any yet.
+const _kFallbackBanners = <Map<String, dynamic>>[
+  {
+    'gradient': [Color(0xFFEF3752), Color(0xFFFF6B35)],
+    'emoji': '🎁',
+    'title': 'Find the Perfect Gift',
+    'subtitle': 'For every occasion, every budget',
+    'cta': 'Shop Now',
+    'link': '/shop',
+  },
+  {
+    'gradient': [Color(0xFF6C3FFF), Color(0xFFAB47BC)],
+    'emoji': '✨',
+    'title': 'Personalised Gifts',
+    'subtitle': 'Make it uniquely theirs',
+    'cta': 'Explore',
+    'link': '/shop?filter=personalised',
+  },
+  {
+    'gradient': [Color(0xFF0EA5E9), Color(0xFF10B981)],
+    'emoji': '🚀',
+    'title': 'Same-Day Delivery',
+    'subtitle': 'Order before 3 PM for delivery today',
+    'cta': 'Order Now',
+    'link': '/shop',
+  },
+];
 
 class _HeroCarousel extends ConsumerStatefulWidget {
   final PageController ctrl;
@@ -608,17 +802,47 @@ class _HeroCarousel extends ConsumerStatefulWidget {
 }
 
 class _HeroCarouselState extends ConsumerState<_HeroCarousel> {
+  Timer? _autoScrollTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    // Auto-scroll every 4 seconds
+    _autoScrollTimer = Timer.periodic(const Duration(seconds: 4), (_) {
+      if (!mounted || !widget.ctrl.hasClients) return;
+      final itemCount = _currentItemCount();
+      if (itemCount < 2) return;
+      final next = (widget.page + 1) % itemCount;
+      widget.ctrl.animateToPage(
+        next,
+        duration: const Duration(milliseconds: 500),
+        curve: Curves.easeInOut,
+      );
+    });
+  }
+
+  int _currentItemCount() {
+    final bannersAsync = ref.read(_heroBannersProvider);
+    final banners = bannersAsync.valueOrNull ?? [];
+    return banners.isEmpty ? _kFallbackBanners.length : banners.length;
+  }
+
+  @override
+  void dispose() {
+    _autoScrollTimer?.cancel();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final bannersAsync = ref.watch(_heroBannersProvider);
     final c = GColors.of(context);
 
     return bannersAsync.when(
-      // Skeleton during load — keeps page height stable.
       loading: () => Padding(
         padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
         child: AspectRatio(
-          aspectRatio: 3 / 1,
+          aspectRatio: 16 / 7,
           child: Container(
             decoration: BoxDecoration(
               color: c.bg2,
@@ -627,29 +851,36 @@ class _HeroCarouselState extends ConsumerState<_HeroCarousel> {
           ),
         ),
       ),
-      // Empty / error → render nothing. Better than fake fallback content.
-      error: (_, __) => const SizedBox.shrink(),
-      data: (banners) {
-        if (banners.isEmpty) return const SizedBox.shrink();
-        return Padding(
-          padding: const EdgeInsets.fromLTRB(0, 16, 0, 0),
-          child: Column(
-            children: [
-              AspectRatio(
-                aspectRatio: 3 / 1,
-                child: PageView.builder(
-                  controller: widget.ctrl,
-                  onPageChanged: widget.onPageChanged,
-                  itemCount: banners.length,
-                  itemBuilder: (_, i) => _ImageBanner(banner: banners[i]),
-                ),
-              ),
-              const Gap(12),
-              if (banners.length > 1) _buildDots(banners.length),
-            ],
+      error: (_, __) => _buildCarousel([], c),
+      data: (banners) => _buildCarousel(banners, c),
+    );
+  }
+
+  Widget _buildCarousel(List<Map<String, dynamic>> apiBanners, GColorsPalette c) {
+    final useApi = apiBanners.isNotEmpty;
+    final count  = useApi ? apiBanners.length : _kFallbackBanners.length;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(0, 16, 0, 0),
+      child: Column(
+        children: [
+          AspectRatio(
+            aspectRatio: 16 / 7,
+            child: PageView.builder(
+              controller: widget.ctrl,
+              onPageChanged: widget.onPageChanged,
+              itemCount: count,
+              itemBuilder: (_, i) => useApi
+                  ? _ImageBanner(banner: apiBanners[i])
+                  : _GradientBanner(data: _kFallbackBanners[i]),
+            ),
           ),
-        );
-      },
+          if (count > 1) ...[
+            const Gap(10),
+            _buildDots(count),
+          ],
+        ],
+      ),
     );
   }
 
@@ -665,7 +896,7 @@ class _HeroCarouselState extends ConsumerState<_HeroCarousel> {
           decoration: BoxDecoration(
             color: widget.page == i
                 ? GColors.brand
-                : GColors.brand.withValues(alpha: 0.2),
+                : GColors.brand.withValues(alpha: 0.25),
             borderRadius: BorderRadius.circular(3),
           ),
         );
@@ -674,50 +905,272 @@ class _HeroCarouselState extends ConsumerState<_HeroCarousel> {
   }
 }
 
-// ─── Image-only banner card ────────────────────────────────────────────────
-// Single 3:1 image as the entire banner. All copy/CTA lives inside the
-// image — no app-rendered title/subtitle/buttons. Tap navigates to linkUrl.
-
-class _ImageBanner extends StatelessWidget {
-  final Map<String, dynamic> banner;
-  const _ImageBanner({required this.banner});
+// ─── Gradient fallback banner ─────────────────────────────────────────────────
+class _GradientBanner extends StatelessWidget {
+  final Map<String, dynamic> data;
+  const _GradientBanner({required this.data});
 
   @override
   Widget build(BuildContext context) {
-    final image = (banner['imageUrl'] as String?) ?? '';
-    final link  = (banner['linkUrl']  as String?) ?? '/shop';
-    final c = GColors.of(context);
+    final colors   = data['gradient'] as List<Color>;
+    final emoji    = data['emoji']    as String;
+    final title    = data['title']    as String;
+    final subtitle = data['subtitle'] as String;
+    final cta      = data['cta']      as String;
+    final link     = data['link']     as String;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: GestureDetector(
         onTap: () {
           HapticFeedback.selectionClick();
-          AudioService.instance.tap();
-          if (link.startsWith('/')) {
-            context.push(link);
-          } else if (link.startsWith('http')) {
-            // External absolute URL — open in browser; ignored on launch fail.
-            launchUrl(Uri.parse(link), mode: LaunchMode.externalApplication);
-          }
+          if (link.startsWith('/')) context.push(link);
         },
         child: ClipRRect(
           borderRadius: BorderRadius.circular(20),
           child: Container(
-            color: c.bg2,
-            child: Image.network(
-              image,
-              fit: BoxFit.cover,
-              width: double.infinity,
-              errorBuilder: (_, __, ___) => Container(color: c.bg2),
-              loadingBuilder: (ctx, child, loading) {
-                if (loading == null) return child;
-                return Container(color: c.bg2);
-              },
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: colors,
+                begin: Alignment.topLeft,
+                end:   Alignment.bottomRight,
+              ),
+            ),
+            padding: const EdgeInsets.fromLTRB(24, 0, 20, 0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, style: GoogleFonts.inter(
+                        fontSize: 20, fontWeight: FontWeight.w900,
+                        color: Colors.white, height: 1.1,
+                      )),
+                      const Gap(6),
+                      Text(subtitle, style: GoogleFonts.inter(
+                        fontSize: 12, color: Colors.white.withValues(alpha: 0.82),
+                      )),
+                      const Gap(14),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Text(cta, style: GoogleFonts.inter(
+                          fontSize: 12, fontWeight: FontWeight.w800,
+                          color: colors.first,
+                        )),
+                      ),
+                    ],
+                  ),
+                ),
+                Text(emoji, style: const TextStyle(fontSize: 64)),
+              ],
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+// ─── Hero banner card ──────────────────────────────────────────────────────
+// Two render modes, decided per-banner:
+//   • Text-overlay  — when the admin set any text field on the banner, the
+//     card splits text-left / image-right (matches the web HeroSlider).
+//   • Image-only    — legacy: a single full-bleed image, all copy baked in.
+// Tap navigates to linkUrl (and the primary button to its own link).
+
+/// Parse a `#RRGGBB` / `#RRGGBBAA` hex string into a Color. CSS gradient
+/// strings (which the web banner allows) and empty values return [fallback].
+Color _bannerHex(String? raw, Color fallback) {
+  if (raw == null) return fallback;
+  final s = raw.trim();
+  if (s.isEmpty || s.contains('gradient')) return fallback;
+  var hex = s.startsWith('#') ? s.substring(1) : s;
+  if (hex.length == 6) hex = 'FF$hex';            // add opaque alpha
+  if (hex.length != 8) return fallback;
+  final v = int.tryParse(hex, radix: 16);
+  return v == null ? fallback : Color(v);
+}
+
+class _ImageBanner extends StatelessWidget {
+  final Map<String, dynamic> banner;
+  const _ImageBanner({required this.banner});
+
+  String _str(String key) => (banner[key] as String?)?.trim() ?? '';
+
+  void _go(BuildContext context, String link) {
+    HapticFeedback.selectionClick();
+    AudioService.instance.tap();
+    final l = link.isEmpty ? '/shop' : link;
+    if (l.startsWith('/')) {
+      context.push(l);
+    } else if (l.startsWith('http')) {
+      launchUrl(Uri.parse(l), mode: LaunchMode.externalApplication);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final image = _str('imageUrl');
+    final link  = _str('linkUrl').isEmpty ? '/shop' : _str('linkUrl');
+    final c = GColors.of(context);
+
+    final tagline       = _str('tagline');
+    final heading       = _str('heading');
+    final headingAccent = _str('headingAccent');
+    final subtitle      = _str('subtitle');
+    final button1Text   = _str('button1Text');
+    final button1Link   = _str('button1Link');
+
+    final hasText = tagline.isNotEmpty ||
+        heading.isNotEmpty ||
+        headingAccent.isNotEmpty ||
+        subtitle.isNotEmpty ||
+        button1Text.isNotEmpty;
+
+    final img = Image.network(
+      image,
+      fit: BoxFit.cover,
+      width: double.infinity,
+      height: double.infinity,
+      errorBuilder: (_, __, ___) => Container(color: c.bg2),
+      loadingBuilder: (ctx, child, loading) {
+        if (loading == null) return child;
+        return Container(color: c.bg2);
+      },
+    );
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: GestureDetector(
+        onTap: () => _go(context, link),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(20),
+          child: Container(
+            color: c.bg2,
+            child: hasText
+                ? _textOverlay(
+                    context, img,
+                    tagline: tagline,
+                    heading: heading,
+                    headingAccent: headingAccent,
+                    subtitle: subtitle,
+                    button1Text: button1Text,
+                    button1Link: button1Link.isEmpty ? link : button1Link,
+                  )
+                : img,
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Text column (left ~54%) + image (right ~46%). Colors come from the
+  // per-banner overrides, falling back to the brand cream/red defaults.
+  Widget _textOverlay(
+    BuildContext context,
+    Widget img, {
+    required String tagline,
+    required String heading,
+    required String headingAccent,
+    required String subtitle,
+    required String button1Text,
+    required String button1Link,
+  }) {
+    final bg     = _bannerHex(banner['textBgColor'] as String?, const Color(0xFFFFF5F7));
+    final fg     = _bannerHex(banner['textColor']   as String?, const Color(0xFF1A1A2E));
+    final accent = _bannerHex(banner['accentColor'] as String?, const Color(0xFFEF3752));
+    final btnBg  = _bannerHex(banner['buttonColor'] as String?, const Color(0xFFEF3752));
+
+    return Row(
+      children: [
+        Expanded(
+          flex: 54,
+          child: Container(
+            color: bg,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (tagline.isNotEmpty)
+                  Text(
+                    tagline.toUpperCase(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 8.5,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: 1.4,
+                      color: accent.withValues(alpha: 0.85),
+                    ),
+                  ),
+                if (heading.isNotEmpty || headingAccent.isNotEmpty) ...[
+                  const Gap(3),
+                  Text.rich(
+                    TextSpan(children: [
+                      if (heading.isNotEmpty) TextSpan(text: heading),
+                      if (heading.isNotEmpty && headingAccent.isNotEmpty)
+                        const TextSpan(text: '\n'),
+                      if (headingAccent.isNotEmpty)
+                        TextSpan(text: headingAccent, style: TextStyle(color: accent)),
+                    ]),
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 16,
+                      height: 1.1,
+                      fontWeight: FontWeight.w900,
+                      color: fg,
+                    ),
+                  ),
+                ],
+                if (subtitle.isNotEmpty) ...[
+                  const Gap(4),
+                  Text(
+                    subtitle,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 10,
+                      height: 1.25,
+                      color: fg.withValues(alpha: 0.7),
+                    ),
+                  ),
+                ],
+                if (button1Text.isNotEmpty) ...[
+                  const Gap(8),
+                  GestureDetector(
+                    onTap: () => _go(context, button1Link),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                      decoration: BoxDecoration(
+                        color: btnBg,
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Text(
+                        button1Text,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+        Expanded(flex: 46, child: img),
+      ],
     );
   }
 }
@@ -799,7 +1252,7 @@ class _ProductStrip extends ConsumerWidget {
 
     final c = GColors.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(0, 28, 0, 0),
+      padding: EdgeInsets.zero,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -836,15 +1289,18 @@ class _ProductStrip extends ConsumerWidget {
             error:   (_, __) => const SizedBox.shrink(),
             data:    (products) {
               if (products.isEmpty) return const SizedBox.shrink();
+              // Unified product card across all home strips. Height fits
+              // the 172 image + price/CTA row + title + rating +
+              // variation pill, with a few px of safety.
               return SizedBox(
-                height: 210,
+                height: 310,
                 child: ListView.builder(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
                   scrollDirection: Axis.horizontal,
                   itemCount: products.length,
                   itemBuilder: (ctx, i) => Padding(
                     padding: const EdgeInsets.only(right: 12),
-                    child: _MiniProductCard(product: products[i])
+                    child: HomeProductCard(product: products[i])
                         .animate()
                         .fadeIn(delay: (i * 45).ms)
                         .slideX(begin: 0.05, end: 0),
@@ -897,15 +1353,18 @@ class _MiniProductCardState extends State<_MiniProductCard> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Square card — radius 16, outlined
+              // Square card — border on outer Container, clip on inner ClipRRect
+              // (avoids double-edge artifact at rounded corners)
               Container(
                 height: 152, width: 152,
-                clipBehavior: Clip.antiAlias,
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(16),
                   border: Border.all(color: c.border, width: 1),
                 ),
-                child: GiftImage(src: first, fit: BoxFit.cover),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(15),
+                  child: GiftImage(src: first, fit: BoxFit.cover),
+                ),
               ),
               const Gap(9),
               Text(title,
@@ -915,29 +1374,11 @@ class _MiniProductCardState extends State<_MiniProductCard> {
                   color: c.text0,
                 )),
               const Gap(3),
-              Row(
-                children: [
-                  Text('₹${price.toInt()}',
-                    style: GoogleFonts.inter(
-                      fontSize: 13, fontWeight: FontWeight.w800,
-                      color: c.text0,
-                    )),
-                  const Gap(6),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 5, vertical: 1),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF10B981).withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Text('Free delivery',
-                      style: GoogleFonts.inter(
-                        fontSize: 8.5, fontWeight: FontWeight.w600,
-                        color: const Color(0xFF10B981),
-                      )),
-                  ),
-                ],
-              ),
+              Text('₹${price.toInt()}',
+                style: GoogleFonts.inter(
+                  fontSize: 13, fontWeight: FontWeight.w800,
+                  color: c.text0,
+                )),
             ],
           ),
         ),
@@ -1025,18 +1466,24 @@ class _BrowseCard extends StatelessWidget {
 // ─── Goins card ───────────────────────────────────────────────────────────────
 
 class _GoinsCard extends StatelessWidget {
-  const _GoinsCard();
+  // Balance is passed from the parent (already watched there via
+  // coinBalanceProvider) so this card stays a StatelessWidget and avoids
+  // a second provider read for the same data.
+  final int balance;
+  const _GoinsCard({this.balance = 0});
 
   @override
   Widget build(BuildContext context) {
     final c = GColors.of(context);
+    final hasBalance = balance > 0;
+
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 28, 16, 0),
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
       child: GestureDetector(
         onTap: () {
           HapticFeedback.mediumImpact();
           AudioService.instance.coinCollect();
-          context.go('/goins');
+          context.push('/goins');
         },
         child: Container(
           padding: const EdgeInsets.all(20),
@@ -1058,19 +1505,27 @@ class _GoinsCard extends StatelessWidget {
                         color: GColors.gold.withValues(alpha: 0.18),
                         borderRadius: BorderRadius.circular(999),
                       ),
-                      child: Text('EARN REWARDS', style: GoogleFonts.inter(
-                        fontSize: 9, fontWeight: FontWeight.w800,
-                        color: GColors.gold, letterSpacing: 0.8,
-                      )),
+                      child: Text(
+                        hasBalance ? 'YOUR WALLET' : 'EARN REWARDS',
+                        style: GoogleFonts.inter(
+                          fontSize: 9, fontWeight: FontWeight.w800,
+                          color: GColors.gold, letterSpacing: 0.8,
+                        )),
                     ),
                     const Gap(10),
-                    Text('Collect Goins,\nUnlock Surprises',
+                    Text(
+                      hasBalance
+                          ? 'You have ${balance}G\nready to use'
+                          : 'Collect Goins,\nUnlock Surprises',
                       style: GoogleFonts.inter(
                         fontSize: 18, fontWeight: FontWeight.w800,
                         color: c.text0, height: 1.3,
                       )),
                     const Gap(6),
-                    Text('Every purchase earns Goins. Redeem for discounts.',
+                    Text(
+                      hasBalance
+                          ? 'Apply at checkout for an instant discount.'
+                          : 'Every purchase earns Goins. Redeem for discounts.',
                       style: GoogleFonts.inter(
                         fontSize: 12, color: c.text1, height: 1.4,
                       )),
@@ -1078,10 +1533,10 @@ class _GoinsCard extends StatelessWidget {
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.toll_outlined,
-                            size: 14, color: GColors.gold),
+                        Icon(Icons.toll_outlined, size: 14, color: GColors.gold),
                         const Gap(5),
-                        Text('View My Goins',
+                        Text(
+                          hasBalance ? 'Redeem ${balance}G now' : 'Start Earning',
                           style: GoogleFonts.inter(
                             fontSize: 13, fontWeight: FontWeight.w700,
                             color: GColors.gold,
@@ -1095,6 +1550,8 @@ class _GoinsCard extends StatelessWidget {
                 ),
               ),
               const Gap(16),
+              // Right side: show balance number when the user has Goins;
+              // fall back to the coin icon for new users.
               Container(
                 width: 64, height: 64,
                 decoration: BoxDecoration(
@@ -1103,8 +1560,23 @@ class _GoinsCard extends StatelessWidget {
                   border: Border.all(
                       color: GColors.gold.withValues(alpha: 0.22)),
                 ),
-                child: Icon(Icons.toll_outlined,
-                    size: 30, color: GColors.gold),
+                child: hasBalance
+                    ? Center(
+                        child: AnimatedSwitcher(
+                          duration: const Duration(milliseconds: 350),
+                          child: Text(
+                            key: ValueKey('goins-$balance'),
+                            '$balance',
+                            style: GoogleFonts.inter(
+                              fontSize: balance >= 1000 ? 14 : 18,
+                              fontWeight: FontWeight.w900,
+                              color: GColors.gold,
+                              height: 1.0,
+                            ),
+                          ),
+                        ),
+                      )
+                    : const Icon(Icons.toll_outlined, size: 30, color: GColors.gold),
               ),
             ],
           ),
@@ -1122,7 +1594,7 @@ class _CasinoBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 28, 16, 0),
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
       child: GestureDetector(
         onTap: () {
           HapticFeedback.mediumImpact();
@@ -1134,7 +1606,7 @@ class _CasinoBanner extends StatelessWidget {
             gradient: const LinearGradient(
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
-              colors: [Color(0xFF1A0800), Color(0xFF0D0D18)],
+              colors: [Color(0xFF6B0000), Color(0xFF2A0000)],
             ),
             borderRadius: BorderRadius.circular(20),
             border: Border.all(color: GColors.gold.withValues(alpha: 0.22)),
@@ -1263,20 +1735,41 @@ class _CasinoBanner extends StatelessWidget {
 
 // ─── Smart Reminders ──────────────────────────────────────────────────────────
 
-class _SmartRemindersCard extends StatefulWidget {
+class _SmartRemindersCard extends ConsumerStatefulWidget {
   const _SmartRemindersCard();
 
   @override
-  State<_SmartRemindersCard> createState() => _SmartRemindersCardState();
+  ConsumerState<_SmartRemindersCard> createState() => _SmartRemindersCardState();
 }
 
-class _SmartRemindersCardState extends State<_SmartRemindersCard> {
-  // Local reminders list (default set + user-added)
-  final List<(IconData icon, String name, String when, Color color)> _reminders = [
-    (Icons.cake_outlined,          'Birthday',    '2 days away', Color(0xFFEC4899)),
-    (Icons.favorite_outline,       'Anniversary', 'Next week',   Color(0xFF6366F1)),
-    (Icons.star_outline_rounded,   'Christmas',   'Dec 25',      Color(0xFF10B981)),
-  ];
+class _SmartRemindersCardState extends ConsumerState<_SmartRemindersCard> {
+  // Tuple: (icon, name, color, date)
+  // "when" label is computed dynamically so it stays fresh each session.
+  // Only entries whose date is within the next 15 days are shown.
+  final List<(IconData, String, Color, DateTime)> _reminders = [];
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
+
+  static String _whenLabel(DateTime date) {
+    final now   = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final days  = date.difference(today).inDays;
+    if (days == 0) return 'Today';
+    if (days == 1) return 'Tomorrow';
+    if (days <  7) return '$days days away';
+    return '${(days / 7).ceil()} weeks away';
+  }
+
+  List<(IconData, String, Color, DateTime)> get _upcoming {
+    final today = DateTime.now();
+    final cutoff = today.add(const Duration(days: 15));
+    return _reminders.where((r) {
+      final d = r.$4;
+      return !d.isBefore(DateTime(today.year, today.month, today.day)) &&
+             !d.isAfter(cutoff);
+    }).toList()
+      ..sort((a, b) => a.$4.compareTo(b.$4)); // nearest first
+  }
 
   void _showAddReminderSheet() {
     HapticFeedback.selectionClick();
@@ -1434,23 +1927,17 @@ class _SmartRemindersCardState extends State<_SmartRemindersCard> {
                 label: 'Save Reminder',
                 onPressed: () {
                   if (nameCtrl.text.trim().isEmpty || selectedDate == null) return;
-                  final days = selectedDate!.difference(DateTime.now()).inDays;
-                  final when = days == 0 ? 'Today'
-                      : days == 1 ? 'Tomorrow'
-                      : days < 7 ? '$days days away'
-                      : days < 30 ? '${(days / 7).round()} weeks away'
-                      : '${selectedDate!.day}/${selectedDate!.month}';
-                  final colors = [
-                    const Color(0xFFEC4899), const Color(0xFF6366F1),
-                    const Color(0xFF10B981), const Color(0xFFF59E0B),
-                    const Color(0xFF8B5CF6),
+                  const colors = [
+                    Color(0xFFEC4899), Color(0xFF6366F1),
+                    Color(0xFF10B981), Color(0xFFF59E0B),
+                    Color(0xFF8B5CF6),
                   ];
                   setState(() {
                     _reminders.add((
                       selectedIcon,
                       nameCtrl.text.trim(),
-                      when,
                       colors[_reminders.length % colors.length],
+                      selectedDate!,  // actual date — "when" is computed on render
                     ));
                   });
                   Navigator.pop(ctx);
@@ -1469,8 +1956,9 @@ class _SmartRemindersCardState extends State<_SmartRemindersCard> {
   @override
   Widget build(BuildContext context) {
     final c = GColors.of(context);
+    final eventAsync = ref.watch(eventReminderProvider);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 28, 16, 0),
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1478,7 +1966,7 @@ class _SmartRemindersCardState extends State<_SmartRemindersCard> {
             children: [
               Icon(Icons.notifications_none_rounded, size: 20, color: c.text0),
               const Gap(8),
-              Text('Smart Reminders', style: GoogleFonts.inter(
+              Text('Reminders', style: GoogleFonts.inter(
                 fontSize: 18, fontWeight: FontWeight.w800, color: c.text0,
               )),
               const Spacer(),
@@ -1491,56 +1979,135 @@ class _SmartRemindersCardState extends State<_SmartRemindersCard> {
                     borderRadius: BorderRadius.circular(999),
                     border: Border.all(color: GColors.brand.withValues(alpha: 0.3)),
                   ),
-                  child: Text('+ Add', style: GoogleFonts.inter(
-                    fontSize: 12, fontWeight: FontWeight.w700, color: GColors.brand,
-                  )),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    const Icon(Icons.add_rounded, size: 14, color: GColors.brand),
+                    const Gap(2),
+                    Text('Add', style: GoogleFonts.inter(
+                      fontSize: 12, fontWeight: FontWeight.w700, color: GColors.brand,
+                    )),
+                  ]),
                 ),
               ),
             ],
           ),
-          const Gap(6),
-          Text('We\'ll remind you to order before occasions.',
-            style: GoogleFonts.inter(fontSize: 13, color: c.text2, height: 1.4)),
           const Gap(12),
-          ..._reminders.map((o) => Container(
-            margin: const EdgeInsets.only(bottom: 8),
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            decoration: BoxDecoration(
-              color: c.bg1,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: c.border, width: 0.5),
-            ),
-            child: Row(
-              children: [
-                Container(
-                  width: 36, height: 36,
+
+          // ── Upcoming occasion card (from announcements / local calendar) ──
+          eventAsync.when(
+            loading: () => const SizedBox.shrink(),
+            error: (_, __) => const SizedBox.shrink(),
+            data: (occ) {
+              if (occ == null) return const SizedBox.shrink();
+              return GestureDetector(
+                onTap: () {
+                  HapticFeedback.selectionClick();
+                  if (occ.link.startsWith('/')) context.push(occ.link);
+                },
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
                   decoration: BoxDecoration(
-                    color: o.$4.withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: o.$4.withValues(alpha: 0.22)),
+                    color: GColors.brand.withValues(alpha: 0.07),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: GColors.brand.withValues(alpha: 0.2)),
                   ),
-                  child: Icon(o.$1, size: 18, color: o.$4),
+                  child: Row(children: [
+                    Text(occ.emoji, style: const TextStyle(fontSize: 22)),
+                    const Gap(10),
+                    Expanded(child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(occ.name, style: GoogleFonts.inter(
+                          fontSize: 13, fontWeight: FontWeight.w700, color: c.text0)),
+                        Text(occ.tagline, maxLines: 1, overflow: TextOverflow.ellipsis,
+                          style: GoogleFonts.inter(fontSize: 11, color: c.text2)),
+                      ],
+                    )),
+                    const Gap(8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: GColors.brand,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text('Shop Now', style: GoogleFonts.inter(
+                        fontSize: 10, fontWeight: FontWeight.w700, color: Colors.white)),
+                    ),
+                  ]),
                 ),
-                const Gap(12),
-                Expanded(
-                  child: Text(o.$2, style: GoogleFonts.inter(
-                    fontSize: 14, fontWeight: FontWeight.w600, color: c.text0,
-                  )),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: o.$4.withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: o.$4.withValues(alpha: 0.25)),
+              ).animate().fadeIn(duration: 300.ms);
+            },
+          ),
+
+          // Only reminders within the next 15 days — computed fresh each build
+          ..._upcoming.map((o) {
+            final color    = o.$3;
+            final whenText = _whenLabel(o.$4);
+            return Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color:        c.bg1,
+                borderRadius: BorderRadius.circular(12),
+                border:       Border.all(color: c.border, width: 0.5),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 36, height: 36,
+                    decoration: BoxDecoration(
+                      color:        color.withValues(alpha: 0.10),
+                      borderRadius: BorderRadius.circular(10),
+                      border:       Border.all(color: color.withValues(alpha: 0.22)),
+                    ),
+                    child: Icon(o.$1, size: 18, color: color),
                   ),
-                  child: Text(o.$3, style: GoogleFonts.inter(
-                    fontSize: 10, fontWeight: FontWeight.w600, color: o.$4,
-                  )),
+                  const Gap(12),
+                  Expanded(
+                    child: Text(o.$2, style: GoogleFonts.inter(
+                      fontSize: 14, fontWeight: FontWeight.w600, color: c.text0,
+                    )),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color:        color.withValues(alpha: 0.10),
+                      borderRadius: BorderRadius.circular(6),
+                      border:       Border.all(color: color.withValues(alpha: 0.25)),
+                    ),
+                    child: Text(whenText, style: GoogleFonts.inter(
+                      fontSize: 10, fontWeight: FontWeight.w600, color: color,
+                    )),
+                  ),
+                ],
+              ),
+            ).animate().fadeIn(delay: 100.ms);
+          }),
+
+          // Empty state — shown when no reminders fall within 15 days.
+          // SizedBox(width: double.infinity) forces the Text to fill the column
+          // width so textAlign: center actually centers within the available
+          // space (Column with crossAxisAlignment.start shrink-wraps children,
+          // making Text center within its own content width — invisible).
+          if (_upcoming.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8, bottom: 8),
+              child: SizedBox(
+                width: double.infinity,
+                child: Text(
+                  // Single-line copy — short enough to never wrap on Fold 7
+                  // outer screen even at 12px. Previous two-line version
+                  // looked cramped between two cards.
+                  'No reminders yet · Tap + Add to create one',
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.inter(
+                    fontSize: 12, color: c.text2, height: 1.4,
+                  ),
                 ),
-              ],
+              ),
             ),
-          ).animate().fadeIn(delay: 100.ms)),
         ],
       ),
     );

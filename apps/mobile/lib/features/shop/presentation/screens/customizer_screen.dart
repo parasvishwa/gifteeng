@@ -532,6 +532,12 @@ class _SimpleDesign {
   final Map<String, TextStyleChoice> textStyles = {};
   final Map<String, double> imgScales = {};       // zoom per image zone
   final Map<String, double> imgRotations = {};    // rotation (degrees) per image zone
+  // Customer drag-to-reposition offset, in zone-frame percentages
+  // (-50..50 each axis; 0,0 = centred). Persisted as `imageOffsets` in
+  // the customization payload alongside imgScales / imgRotations so the
+  // bake reproduces the exact framing the customer chose.
+  final Map<String, Offset> imgOffsets = {};
+  final Map<String, Offset> maskOffsets = {};
   // Customiser v2 — per-text-zone customer drag offset, % of zone w/h.
   // Only populated for zones whose SimpleZone.customerCanDrag === true.
   final Map<String, Offset> textPositions = {};
@@ -573,6 +579,8 @@ class _CustomizerScreenState extends ConsumerState<CustomizerScreen> {
   Map<String, String>    get _maskUrls       => _designs[_activeDesign].maskUrls;
   Map<String, double>    get _maskScales     => _designs[_activeDesign].maskScales;
   Map<String, double>    get _maskRotations  => _designs[_activeDesign].maskRotations;
+  Map<String, Offset>    get _imgOffsets     => _designs[_activeDesign].imgOffsets;
+  Map<String, Offset>    get _maskOffsets    => _designs[_activeDesign].maskOffsets;
 
   // ── Template state (full canvas mode) ─────────────────────────────────────
   String? _selectedTemplateJson; // set when user picks a template in full canvas mode
@@ -604,11 +612,42 @@ class _CustomizerScreenState extends ConsumerState<CustomizerScreen> {
   /// `__existingCustomization`. Pre-populate the UI fields so they can tweak
   /// rather than re-creating from scratch.
   ///
-  /// Handles both single-design (`fills`) and multi-design (`designs:[...]`)
-  /// payloads so "Add another design → cart → Edit" restores all designs.
+  /// Handles BOTH wire formats:
+  ///
+  ///   A) Flutter native ({ __simpleZones: true, designs: [{ images, texts, … }] })
+  ///      — what the app emits when the customer designs on the phone.
+  ///
+  ///   B) Web emit shape ({ canvasJSON: "<stringified payload>",
+  ///      previewDataUrl, designs: [{ canvasJSON, previewDataUrl }] }) —
+  ///      what the web `/customize/<slug>` page emits. Each design's
+  ///      `canvasJSON` is a JSON-string containing the *real*
+  ///      `__simpleZones` + `fills` payload.
+  ///
+  /// Without this dual-format support, designs created on web (multi or
+  /// single) would silently fail to restore on the phone — the user
+  /// would tap "Edit design" on a customised cart item and see a blank
+  /// customizer screen because the `__simpleZones` marker check failed.
   void _hydrateExistingCustomization() {
     final existing = widget.product['__existingCustomization'];
     if (existing is! Map) return;
+
+    /// Decode `canvasJSON` (web-shape) into a Map of inner SimpleZone
+    /// payload fields. Returns null if the field is absent or unparseable.
+    Map<String, dynamic>? decodeWebCanvasJson(dynamic raw) {
+      if (raw is! Map) return null;
+      final cj = raw['canvasJSON'];
+      if (cj is! String || cj.isEmpty) return null;
+      try {
+        final inner = jsonDecode(cj);
+        if (inner is Map) return Map<String, dynamic>.from(inner);
+      } catch (_) {}
+      return null;
+    }
+
+    // Web-shape detection: top-level has canvasJSON (not __simpleZones).
+    // Inner parsed payload carries the real `__simpleZones: true`.
+    final webInner = decodeWebCanvasJson(existing);
+    final webIsSimple = webInner != null && webInner['__simpleZones'] == true;
 
     if (existing['__simpleZones'] == true) {
       if (existing['__multiDesign'] == true) {
@@ -623,11 +662,13 @@ class _CustomizerScreenState extends ConsumerState<CustomizerScreen> {
           final styles   = (raw['textStyles']     as Map?) ?? {};
           final scales   = (raw['imageScales']    as Map?) ?? {};
           final rotations = (raw['imageRotations'] as Map?) ?? {};
+          final imgOffs   = (raw['imageOffsets']   as Map?) ?? {};
           final textPos  = (raw['textPositions']   as Map?) ?? {};
           final maskImgs = (raw['maskImages']      as Map?) ?? {};
           final maskSc   = (raw['maskScales']      as Map?) ?? {};
           final maskRot  = (raw['maskRotations']   as Map?) ?? {};
-          _hydrateDesign(d, images, texts, styles, scales, rotations, textPos, maskImgs, maskSc, maskRot);
+          final maskOffs = (raw['maskOffsets']     as Map?) ?? {};
+          _hydrateDesign(d, images, texts, styles, scales, rotations, textPos, maskImgs, maskSc, maskRot, imgOffs, maskOffs);
           _designs.add(d);
         }
         if (_designs.isEmpty) _designs.add(_SimpleDesign());
@@ -640,12 +681,62 @@ class _CustomizerScreenState extends ConsumerState<CustomizerScreen> {
         final styles   = (fills['textStyles']    as Map?) ?? {};
         final scales   = (fills['imageScales']   as Map?) ?? {};
         final rotations = (fills['imageRotations'] as Map?) ?? {};
+        final imgOffs   = (existing['imageOffsets'] as Map?) ?? (fills['imageOffsets'] as Map?) ?? {};
         final textPos  = (fills['textPositions'] as Map?) ?? {};
         final maskImgs = (fills['maskImages']    as Map?) ?? {};
         final maskSc   = (existing['maskScales']    as Map?) ?? (fills['maskScales']    as Map?) ?? {};
         final maskRot  = (existing['maskRotations'] as Map?) ?? (fills['maskRotations'] as Map?) ?? {};
-        _hydrateDesign(_designs[0], images, texts, styles, scales, rotations, textPos, maskImgs, maskSc, maskRot);
+        final maskOffs = (existing['maskOffsets']   as Map?) ?? (fills['maskOffsets']   as Map?) ?? {};
+        _hydrateDesign(_designs[0], images, texts, styles, scales, rotations, textPos, maskImgs, maskSc, maskRot, imgOffs, maskOffs);
       }
+    } else if (webIsSimple) {
+      // Web-shape multi-design: each design has its own canvasJSON
+      // string we need to parse independently.
+      final designsList = (existing['designs'] as List?) ?? [];
+      _designs.clear();
+
+      void hydrateFromInner(_SimpleDesign d, Map<String, dynamic> inner) {
+        final fills    = (inner['fills']        as Map?) ?? {};
+        final images   = (fills['images']       as Map?) ?? {};
+        final texts    = (fills['texts']         as Map?) ?? {};
+        final styles   = (fills['textStyles']    as Map?) ?? {};
+        final maskImgs = (fills['maskImages']    as Map?) ?? {};
+        final textPos  = (fills['textPositions'] as Map?) ?? {};
+        // Scales / rotations / offsets sit at TOP of the SimpleCustomizerPayload
+        // (alongside fills), not inside it. Read from `inner` directly.
+        final scales    = (inner['imageScales']    as Map?) ?? {};
+        final rotations = (inner['imageRotations'] as Map?) ?? {};
+        final imgOffs   = (inner['imageOffsets']   as Map?) ?? {};
+        final maskSc    = (inner['maskScales']     as Map?) ?? {};
+        final maskRot   = (inner['maskRotations']  as Map?) ?? {};
+        final maskOffs  = (inner['maskOffsets']    as Map?) ?? {};
+        _hydrateDesign(
+          d, images, texts, styles, scales, rotations,
+          textPos, maskImgs, maskSc, maskRot, imgOffs, maskOffs,
+        );
+      }
+
+      if (designsList.length > 1) {
+        // Multi-design save (Pack-of-N, Add another design)
+        for (final raw in designsList) {
+          final inner = decodeWebCanvasJson(raw);
+          if (inner == null) continue;
+          final d = _SimpleDesign();
+          hydrateFromInner(d, inner);
+          _designs.add(d);
+        }
+      } else {
+        // Single-design save — `existing.canvasJSON` IS the payload.
+        // The first slot of the existing list also contains the same
+        // canvasJSON (web duplicates the first design at the top level
+        // for backwards compatibility), so prefer the top-level decode.
+        final d = _SimpleDesign();
+        hydrateFromInner(d, webInner);
+        _designs.add(d);
+      }
+
+      if (_designs.isEmpty) _designs.add(_SimpleDesign());
+      _activeDesign = 0;
     }
 
     // Legacy text-only form
@@ -675,7 +766,20 @@ class _CustomizerScreenState extends ConsumerState<CustomizerScreen> {
     Map maskImages = const {},
     Map maskScales = const {},
     Map maskRotations = const {},
+    Map imageOffsets = const {},
+    Map maskOffsets = const {},
   ]) {
+    void hydrateOffsetMap(Map raw, Map<String, Offset> dst) {
+      raw.forEach((k, v) {
+        if (v is Map) {
+          final x = (v['x'] as num?)?.toDouble() ?? 0;
+          final y = (v['y'] as num?)?.toDouble() ?? 0;
+          dst[k.toString()] = Offset(x, y);
+        }
+      });
+    }
+    hydrateOffsetMap(imageOffsets, d.imgOffsets);
+    hydrateOffsetMap(maskOffsets,  d.maskOffsets);
     images.forEach((k, v) {
       final s = v?.toString() ?? '';
       if (s.startsWith('data:')) {
@@ -892,6 +996,7 @@ class _CustomizerScreenState extends ConsumerState<CustomizerScreen> {
     // the mask-specific callbacks. Keeps web/Flutter UX consistent.
     final initScale  = _maskScales[m.id]    ?? 1.0;
     final initRotate = _maskRotations[m.id] ?? 0.0;
+    final initOffset = _maskOffsets[m.id]   ?? Offset.zero;
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -907,10 +1012,12 @@ class _CustomizerScreenState extends ConsumerState<CustomizerScreen> {
         url:   _maskUrls[m.id],
         initialScale:    initScale,
         initialRotation: initRotate,
-        onApply: (scale, rotation) {
+        initialOffset:   initOffset,
+        onApply: (scale, rotation, offset) {
           setState(() {
             _maskScales[m.id]    = scale;
             _maskRotations[m.id] = rotation;
+            _maskOffsets[m.id]   = offset;
           });
         },
         onRemove: () => setState(() {
@@ -918,6 +1025,7 @@ class _CustomizerScreenState extends ConsumerState<CustomizerScreen> {
           _maskUrls.remove(m.id);
           _maskScales.remove(m.id);
           _maskRotations.remove(m.id);
+          _maskOffsets.remove(m.id);
         }),
         onReplace: () async {
           await _pickMaskImage(m.id);
@@ -981,6 +1089,13 @@ class _CustomizerScreenState extends ConsumerState<CustomizerScreen> {
               'imageScales': Map<String, double>.from(d.imgScales),
             if (d.imgRotations.isNotEmpty)
               'imageRotations': Map<String, double>.from(d.imgRotations),
+            // Drag-to-reposition offsets — same percentage convention
+            // as web (-50..50 each axis, 0,0 = centred). Lets the bake
+            // pipeline reproduce the customer's exact framing.
+            if (d.imgOffsets.isNotEmpty)
+              'imageOffsets': d.imgOffsets.map(
+                (k, v) => MapEntry(k, {'x': v.dx, 'y': v.dy}),
+              ),
             if (d.textPositions.isNotEmpty)
               'textPositions': d.textPositions.map(
                 (k, v) => MapEntry(k, {'dxPct': v.dx, 'dyPct': v.dy}),
@@ -993,6 +1108,10 @@ class _CustomizerScreenState extends ConsumerState<CustomizerScreen> {
               'maskScales': Map<String, double>.from(d.maskScales),
             if (d.maskRotations.isNotEmpty)
               'maskRotations': Map<String, double>.from(d.maskRotations),
+            if (d.maskOffsets.isNotEmpty)
+              'maskOffsets': d.maskOffsets.map(
+                (k, v) => MapEntry(k, {'x': v.dx, 'y': v.dy}),
+              ),
           };
         }
 
@@ -1611,6 +1730,7 @@ class _CustomizerScreenState extends ConsumerState<CustomizerScreen> {
                 url: url,
                 scale: _imgScales[z.id] ?? 1.0,
                 rotation: _imgRotations[z.id] ?? 0.0,
+                offset: _imgOffsets[z.id] ?? Offset.zero,
                 onClear: () => _clearImg(z.id),
               )
             : _EmptyImgZone(zone: z),
@@ -1911,6 +2031,7 @@ class _CustomizerScreenState extends ConsumerState<CustomizerScreen> {
   void _showImgEditSheet(SimpleZone z) {
     final initScale  = _imgScales[z.id]    ?? 1.0;
     final initRotate = _imgRotations[z.id] ?? 0.0;
+    final initOffset = _imgOffsets[z.id]   ?? Offset.zero;
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -1921,12 +2042,14 @@ class _CustomizerScreenState extends ConsumerState<CustomizerScreen> {
         zone: z,
         bytes: _imgBytes[z.id],
         url: _imgUrls[z.id],
-        initialScale: initScale,
+        initialScale:    initScale,
         initialRotation: initRotate,
-        onApply: (scale, rotation) {
+        initialOffset:   initOffset,
+        onApply: (scale, rotation, offset) {
           setState(() {
             _imgScales[z.id]    = scale;
             _imgRotations[z.id] = rotation;
+            _imgOffsets[z.id]   = offset;
           });
         },
         onRemove: () => setState(() {
@@ -1934,12 +2057,14 @@ class _CustomizerScreenState extends ConsumerState<CustomizerScreen> {
           _imgUrls.remove(z.id);
           _imgScales.remove(z.id);
           _imgRotations.remove(z.id);
+          _imgOffsets.remove(z.id);
         }),
         onReplace: () async {
           await _pickImage(z.id);
           setState(() {
             _imgScales.remove(z.id);
             _imgRotations.remove(z.id);
+            _imgOffsets.remove(z.id);
           });
         },
       ),
@@ -2114,6 +2239,9 @@ class _FilledImgZone extends StatefulWidget {
   final String? url;
   final double scale;
   final double rotation; // degrees
+  /// Drag-to-reposition offset, in zone-frame percentages (-50..50 each
+  /// axis). 0,0 = centred. Same convention as web `imageOffsets`.
+  final Offset offset;
   final VoidCallback onClear;
   const _FilledImgZone(
       {required this.zone,
@@ -2121,6 +2249,7 @@ class _FilledImgZone extends StatefulWidget {
       this.url,
       this.scale = 1.0,
       this.rotation = 0.0,
+      this.offset = Offset.zero,
       required this.onClear});
 
   @override
@@ -2162,8 +2291,15 @@ class _FilledImgZoneState extends State<_FilledImgZone> {
           height: double.infinity);
     }
 
-    // Apply zoom + rotation
-    if (widget.scale != 1.0 || widget.rotation != 0.0) {
+    // Apply zoom + rotation + drag-to-reposition offset.
+    // Offset is in zone-frame percentages (-50..50). FractionalTranslation
+    // multiplies its argument by the child's size, so an Offset(0.25, 0)
+    // (which is offset/100 of the percentage) shifts a quarter of the
+    // child width. Same convention as web `translate(x%, y%)`.
+    final hasTransform = widget.scale != 1.0 ||
+        widget.rotation != 0.0 ||
+        widget.offset != Offset.zero;
+    if (hasTransform) {
       img = Transform(
         alignment: Alignment.center,
         transform: Matrix4.identity()
@@ -2171,6 +2307,12 @@ class _FilledImgZoneState extends State<_FilledImgZone> {
           ..scale(widget.scale),
         child: img,
       );
+      if (widget.offset != Offset.zero) {
+        img = FractionalTranslation(
+          translation: Offset(widget.offset.dx / 100, widget.offset.dy / 100),
+          child: img,
+        );
+      }
     }
 
     Widget clipped;
@@ -3352,7 +3494,9 @@ class _ImgEditSheet extends StatefulWidget {
   final String? url;
   final double initialScale;
   final double initialRotation;
-  final void Function(double scale, double rotation) onApply;
+  /// Drag-to-reposition offset in zone-frame percentages (-50..50).
+  final Offset initialOffset;
+  final void Function(double scale, double rotation, Offset offset) onApply;
   final VoidCallback onRemove;
   final VoidCallback onReplace;
 
@@ -3362,6 +3506,7 @@ class _ImgEditSheet extends StatefulWidget {
     this.url,
     required this.initialScale,
     required this.initialRotation,
+    this.initialOffset = Offset.zero,
     required this.onApply,
     required this.onRemove,
     required this.onReplace,
@@ -3374,16 +3519,35 @@ class _ImgEditSheet extends StatefulWidget {
 class _ImgEditSheetState extends State<_ImgEditSheet> {
   late double _scale;
   late double _rotation;
+  late Offset _offset; // % of preview size (-50..50 each axis)
+
+  // 200 px preview box — declared once so the drag handler can use the
+  // same number to convert pixel deltas to percentages.
+  static const double _kPreviewSize = 200;
 
   @override
   void initState() {
     super.initState();
     _scale    = widget.initialScale;
     _rotation = widget.initialRotation;
+    _offset   = widget.initialOffset;
   }
 
   void _rotateLeft()  => setState(() => _rotation = (_rotation - 90 + 360) % 360);
   void _rotateRight() => setState(() => _rotation = (_rotation + 90) % 360);
+  void _recenter()    => setState(() => _offset = Offset.zero);
+
+  void _onPanUpdate(DragUpdateDetails d) {
+    setState(() {
+      // Pixel delta → percentage of preview, then clamp to ±50%.
+      final dx = (d.delta.dx / _kPreviewSize) * 100;
+      final dy = (d.delta.dy / _kPreviewSize) * 100;
+      _offset = Offset(
+        (_offset.dx + dx).clamp(-50.0, 50.0),
+        (_offset.dy + dy).clamp(-50.0, 50.0),
+      );
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -3418,33 +3582,58 @@ class _ImgEditSheetState extends State<_ImgEditSheet> {
                   color: _c.text0)),
           const Gap(12),
 
-          // Live preview
+          // Live preview — drag to reposition. The same gesture works
+          // on touch + mouse via Flutter's GestureDetector pan handlers.
           Center(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: SizedBox(
-                width: 200, height: 200,
-                child: ColoredBox(
-                  color: const Color(0xFFF5F5F5),
-                  child: Transform(
-                    alignment: Alignment.center,
-                    transform: Matrix4.identity()
-                      ..rotateZ(_rotation * 3.14159265358979 / 180)
-                      ..scale(_scale),
-                    child: widget.bytes != null
-                        ? Image.memory(widget.bytes!,
-                            fit: BoxFit.cover,
-                            width: 200, height: 200)
-                        : CachedNetworkImage(
-                            imageUrl: widget.url ?? '',
-                            fit: BoxFit.cover,
-                            width: 200, height: 200),
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onPanUpdate: _onPanUpdate,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: SizedBox(
+                  width: _kPreviewSize, height: _kPreviewSize,
+                  child: ColoredBox(
+                    color: const Color(0xFFF5F5F5),
+                    // Translate first, then rotate + scale, so the offset
+                    // stays in zone-frame coordinates regardless of any
+                    // subsequent rotation. Same convention as web bake.
+                    child: FractionalTranslation(
+                      translation: Offset(_offset.dx / 100, _offset.dy / 100),
+                      child: Transform(
+                        alignment: Alignment.center,
+                        transform: Matrix4.identity()
+                          ..rotateZ(_rotation * 3.14159265358979 / 180)
+                          ..scale(_scale),
+                        child: widget.bytes != null
+                            ? Image.memory(widget.bytes!,
+                                fit: BoxFit.cover,
+                                width: _kPreviewSize, height: _kPreviewSize)
+                            : CachedNetworkImage(
+                                imageUrl: widget.url ?? '',
+                                fit: BoxFit.cover,
+                                width: _kPreviewSize, height: _kPreviewSize),
+                      ),
+                    ),
                   ),
                 ),
               ),
             ),
           ),
-          const Gap(16),
+          // Recenter chip — shown only when off-centre so it doesn't
+          // clutter the UI for customers who haven't dragged yet.
+          if (_offset != Offset.zero) ...[
+            const Gap(6),
+            Center(
+              child: TextButton.icon(
+                onPressed: _recenter,
+                icon: const Icon(Icons.center_focus_strong_outlined, size: 14),
+                label: Text('Recenter (${_offset.dx.round()}%, ${_offset.dy.round()}%)',
+                    style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w700)),
+                style: TextButton.styleFrom(foregroundColor: const Color(0xFFEF3752)),
+              ),
+            ),
+          ],
+          const Gap(8),
 
           // Zoom slider
           Row(
@@ -3629,7 +3818,7 @@ class _ImgEditSheetState extends State<_ImgEditSheet> {
               Expanded(
                 child: GestureDetector(
                   onTap: () {
-                    widget.onApply(_scale, _rotation);
+                    widget.onApply(_scale, _rotation, _offset);
                     Navigator.pop(context);
                   },
                   child: Container(

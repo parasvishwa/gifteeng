@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import { Input, Label, Button, Switch, Badge, Textarea } from "@gifteeng/ui";
 import { toast } from "@gifteeng/ui";
+import { sanitizeHtml } from "../../../../lib/sanitize-html";
 
 
 async function safeGet<T>(path: string, fallback: T): Promise<T> {
@@ -54,6 +55,112 @@ interface CustomPage {
 
 const generateSlug = (title: string) =>
   title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+
+// ─── Built-in pages directory ────────────────────────────────────────────────
+// Every screen the customer can land on across web + Flutter. Used by the
+// Pages admin so the operator has a single place to see "what pages exist"
+// and where to edit each one. CMS-editable pages (privacy, terms, …) link
+// to this page's editor. Hardcoded screens (cart, checkout, product detail)
+// link to the specific admin surface that controls their data/copy.
+type Surface = "web" | "flutter" | "both";
+type EditorKind =
+  | { kind: "cms";       slug: string }                 // custom_pages row
+  | { kind: "admin";     href: string; label: string }  // jump to a sibling admin page
+  | { kind: "settings";  tab: string }                  // /super-admin/settings ?tab=
+  | { kind: "code-only" };                              // not yet editable from admin
+
+const BUILT_IN_PAGES: Array<{
+  group: string;
+  label: string;
+  webPath?: string;
+  flutterRoute?: string;
+  surface: Surface;
+  editor: EditorKind;
+  notes?: string;
+}> = [
+  // ── Storefront ────────────────────────────────────────────────────────────
+  { group: "Storefront", label: "Home",           webPath: "/",                flutterRoute: "/home",      surface: "both",
+    editor: { kind: "admin", href: "/super-admin/homepage-content", label: "Homepage Builder" },
+    notes: "Sections, hero copy, banners — all driven by the Homepage Builder + Settings → Hero." },
+  { group: "Storefront", label: "Shop (catalog)", webPath: "/products",        flutterRoute: "/shop",      surface: "both",
+    editor: { kind: "admin", href: "/super-admin/products", label: "Products" } },
+  { group: "Storefront", label: "Product detail", webPath: "/products/[slug]", flutterRoute: "/product/:slug", surface: "both",
+    editor: { kind: "admin", href: "/super-admin/products", label: "Products" } },
+  { group: "Storefront", label: "Categories",     webPath: "/collections",     flutterRoute: "/categories", surface: "both",
+    editor: { kind: "admin", href: "/super-admin/categories", label: "Categories" } },
+  { group: "Storefront", label: "Collections",    webPath: "/collections",     flutterRoute: "/collections", surface: "both",
+    editor: { kind: "admin", href: "/super-admin/collections", label: "Collections" } },
+  { group: "Storefront", label: "Search",         webPath: "/search",          flutterRoute: "/search",    surface: "both",
+    editor: { kind: "code-only" } },
+
+  // ── Cart & checkout ─────────────────────────────────────────────────────
+  { group: "Cart & checkout", label: "Cart",           webPath: "/cart",      flutterRoute: "/cart",       surface: "both",
+    editor: { kind: "code-only" } },
+  { group: "Cart & checkout", label: "Checkout",       webPath: "/checkout",  flutterRoute: "/checkout",   surface: "both",
+    editor: { kind: "admin", href: "/super-admin/settings?tab=payments", label: "Settings → Payments" } },
+  { group: "Cart & checkout", label: "Order success",  webPath: "/order-success", flutterRoute: "/order-success", surface: "both",
+    editor: { kind: "code-only" } },
+  { group: "Cart & checkout", label: "Orders / Track", webPath: "/orders",    flutterRoute: "/orders",     surface: "both",
+    editor: { kind: "admin", href: "/super-admin/orders", label: "Orders admin" } },
+
+  // ── Customer account ────────────────────────────────────────────────────
+  { group: "Account", label: "Sign in",            webPath: "/auth",         flutterRoute: "/auth",      surface: "both",
+    editor: { kind: "code-only" } },
+  { group: "Account", label: "Account",            webPath: "/account",      flutterRoute: "/account",   surface: "both",
+    editor: { kind: "code-only" } },
+  { group: "Account", label: "Wishlist",           webPath: "/account/wishlist", flutterRoute: "/wishlist", surface: "both",
+    editor: { kind: "code-only" } },
+  { group: "Account", label: "Goins / Loyalty",    webPath: "/goins",        flutterRoute: "/goins",     surface: "both",
+    editor: { kind: "admin", href: "/super-admin/coins", label: "Goins & Loyalty admin" } },
+  { group: "Account", label: "Reminders",          webPath: "/reminders",    flutterRoute: "/reminders", surface: "both",
+    editor: { kind: "admin", href: "/super-admin/reminders", label: "Reminders" } },
+  { group: "Account", label: "Reviews",            webPath: "/reviews",      flutterRoute: "/reviews",   surface: "both",
+    editor: { kind: "admin", href: "/super-admin/reviews", label: "Reviews admin" } },
+  { group: "Account", label: "Account deletion",   webPath: "/account-deletion", surface: "web",
+    editor: { kind: "code-only" } },
+
+  // ── Marketing & engagement ──────────────────────────────────────────────
+  { group: "Marketing", label: "Gift quiz",          webPath: "/gift-quiz",  flutterRoute: "/gift-quiz", surface: "both",
+    editor: { kind: "code-only" } },
+  { group: "Marketing", label: "AI design",          webPath: "/ai-design",  flutterRoute: "/ai-design", surface: "both",
+    editor: { kind: "admin", href: "/super-admin/ai-settings", label: "AI Settings" } },
+  { group: "Marketing", label: "Customizer studio",  webPath: "/customize",  flutterRoute: "/customizer", surface: "both",
+    editor: { kind: "admin", href: "/super-admin/customizer", label: "Customizer" } },
+  { group: "Marketing", label: "Gift cards",         webPath: "/gift-cards", surface: "web",
+    editor: { kind: "code-only" } },
+  { group: "Marketing", label: "Album / Stickers",   webPath: "/album",      flutterRoute: "/album",     surface: "both",
+    editor: { kind: "admin", href: "/super-admin/stickers", label: "Stickers admin" } },
+  { group: "Marketing", label: "Games / Play",       webPath: "/play",       flutterRoute: "/play",      surface: "both",
+    editor: { kind: "admin", href: "/super-admin/games", label: "Games admin" } },
+  { group: "Marketing", label: "Referral landing",   webPath: "/referral",   flutterRoute: "/referrals", surface: "both",
+    editor: { kind: "admin", href: "/super-admin/referrals", label: "Referrals admin" } },
+  { group: "Marketing", label: "Videos",             webPath: "/videos",     surface: "web",
+    editor: { kind: "admin", href: "/super-admin/videos", label: "Videos admin" } },
+
+  // ── B2B / vendors ───────────────────────────────────────────────────────
+  { group: "B2B", label: "Catalogs (B2B)",          webPath: "/catalogs",   flutterRoute: "/catalogs",  surface: "both",
+    editor: { kind: "admin", href: "/super-admin/catalogs", label: "Catalogs admin" } },
+  { group: "B2B", label: "Corporate landing",        webPath: "/corporate",  surface: "web",
+    editor: { kind: "settings", tab: "hero" } },
+  { group: "B2B", label: "Become a vendor",          webPath: "/become-a-vendor", flutterRoute: "/become-a-vendor", surface: "both",
+    editor: { kind: "code-only" } },
+
+  // ── Legal / static (CMS-editable) ───────────────────────────────────────
+  { group: "Legal & static (CMS)", label: "Privacy policy",   webPath: "/privacy",  flutterRoute: "/privacy",  surface: "both",
+    editor: { kind: "cms", slug: "privacy-policy" } },
+  { group: "Legal & static (CMS)", label: "Terms",            webPath: "/terms",    flutterRoute: "/terms",    surface: "both",
+    editor: { kind: "cms", slug: "terms" } },
+  { group: "Legal & static (CMS)", label: "Shipping policy",  webPath: "/shipping", flutterRoute: "/shipping", surface: "both",
+    editor: { kind: "cms", slug: "shipping-policy" } },
+  { group: "Legal & static (CMS)", label: "Returns policy",   webPath: "/returns",  flutterRoute: "/returns",  surface: "both",
+    editor: { kind: "cms", slug: "returns-policy" } },
+  { group: "Legal & static (CMS)", label: "About",            webPath: "/about",    flutterRoute: "/about",    surface: "both",
+    editor: { kind: "cms", slug: "about" } },
+  { group: "Legal & static (CMS)", label: "Contact",          webPath: "/contact",  flutterRoute: "/contact",  surface: "both",
+    editor: { kind: "cms", slug: "contact" } },
+  { group: "Legal & static (CMS)", label: "Install (PWA)",    webPath: "/install",  surface: "web",
+    editor: { kind: "code-only" } },
+];
 
 const TOOLBAR_ACTIONS = [
   { icon: Bold, label: "Bold", tag: "<strong>", endTag: "</strong>" },
@@ -220,7 +327,7 @@ export default function AdminPages() {
             <div className="text-[10px] uppercase tracking-wider text-muted-foreground px-4 py-2 bg-muted/20 border-b border-border/30 font-medium">
               Preview
             </div>
-            <div className="p-5 prose prose-sm max-w-none dark:prose-invert" dangerouslySetInnerHTML={{ __html: editing.html_content }} />
+            <div className="p-5 prose prose-sm max-w-none dark:prose-invert" dangerouslySetInnerHTML={{ __html: sanitizeHtml(editing.html_content) }} />
           </div>
         ) : (
           <div className="bg-card rounded-xl border border-border/40 overflow-hidden">
@@ -309,6 +416,31 @@ export default function AdminPages() {
         </div>
       )}
 
+      {/* ── Built-in pages directory ─────────────────────────────────────── */}
+      <BuiltInPagesDirectory
+        customPages={pages}
+        onOpenCms={(slug) => {
+          const existing = pages.find((p) => p.slug === slug);
+          if (existing) {
+            startEdit(existing);
+            return;
+          }
+          // No row yet — open a "new page" prefilled with that slug.
+          setEditing({
+            id: "",
+            title: slug.replace(/-/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
+            slug,
+            html_content: `<div class="page-content">\n  <h1>${slug.replace(/-/g, " ")}</h1>\n  <p>Add content…</p>\n</div>`,
+            is_published: false,
+            created_at: "",
+            updated_at: "",
+          });
+          setIsNew(true);
+          setPreview(false);
+        }}
+        searchQuery={search}
+      />
+
       {/* List */}
       {pages.length === 0 ? (
         <div className="bg-card rounded-xl border border-border/40 py-16 text-center">
@@ -383,6 +515,185 @@ export default function AdminPages() {
                 <button onClick={() => handleDelete(page.id)} className="p-1.5 rounded-lg hover:bg-destructive/10 transition-colors text-muted-foreground hover:text-destructive" title="Delete">
                   <Trash2 className="w-3.5 h-3.5" />
                 </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Built-in pages directory component ──────────────────────────────────────
+// Renders the BUILT_IN_PAGES list grouped by category. Each row tells the
+// operator where the page lives (web URL + Flutter route), which surface it's
+// on, and offers a one-click jump to whatever admin surface controls it.
+function BuiltInPagesDirectory({
+  customPages,
+  onOpenCms,
+  searchQuery,
+}: {
+  customPages: CustomPage[];
+  onOpenCms: (slug: string) => void;
+  searchQuery: string;
+}) {
+  const [expanded, setExpanded] = useState<boolean>(true);
+  const cmsBySlug = useMemo(() => {
+    const m = new Map<string, CustomPage>();
+    customPages.forEach((p) => m.set(p.slug, p));
+    return m;
+  }, [customPages]);
+
+  const filtered = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return BUILT_IN_PAGES;
+    return BUILT_IN_PAGES.filter(
+      (p) =>
+        p.label.toLowerCase().includes(q) ||
+        (p.webPath ?? "").toLowerCase().includes(q) ||
+        (p.flutterRoute ?? "").toLowerCase().includes(q) ||
+        p.group.toLowerCase().includes(q),
+    );
+  }, [searchQuery]);
+
+  // Group by `group` field, preserving the order they appear in BUILT_IN_PAGES.
+  const groups = useMemo(() => {
+    const out: Record<string, typeof BUILT_IN_PAGES> = {};
+    const order: string[] = [];
+    for (const p of filtered) {
+      if (!out[p.group]) {
+        out[p.group] = [];
+        order.push(p.group);
+      }
+      out[p.group]!.push(p);
+    }
+    return order.map((name) => ({ name, items: out[name]! }));
+  }, [filtered]);
+
+  if (filtered.length === 0) return null;
+
+  return (
+    <div className="bg-card rounded-xl border border-border/40 overflow-hidden">
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center justify-between px-4 py-3 hover:bg-muted/20 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <FileText className="w-4 h-4 text-primary" />
+          <span className="text-sm font-semibold">Built-in pages</span>
+          <Badge variant="secondary" className="text-[9px] px-1.5 py-0 h-4">
+            {filtered.length}
+          </Badge>
+        </div>
+        <span className="text-[10px] text-muted-foreground">
+          {expanded ? "Hide" : "Show"} · web + Flutter
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-border/30">
+          {groups.map((g) => (
+            <div key={g.name}>
+              <div className="px-4 py-2 bg-muted/20 border-b border-border/20">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                  {g.name}
+                </p>
+              </div>
+              <div className="divide-y divide-border/30">
+                {g.items.map((p) => {
+                  const cmsRow = p.editor.kind === "cms" ? cmsBySlug.get(p.editor.slug) : null;
+                  return (
+                    <div
+                      key={`${p.group}-${p.label}`}
+                      className="px-4 py-2.5 flex items-center gap-3 hover:bg-accent/20 transition-colors"
+                    >
+                      <div className="w-8 h-8 rounded-lg bg-muted/60 flex items-center justify-center shrink-0">
+                        <FileText className="w-3.5 h-3.5 text-muted-foreground" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-sm font-medium truncate">{p.label}</p>
+                          {p.surface === "both" && (
+                            <Badge variant="outline" className="text-[8px] h-3.5 px-1 bg-blue-500/10 text-blue-600 border-blue-500/20">
+                              Web · App
+                            </Badge>
+                          )}
+                          {p.surface === "web" && (
+                            <Badge variant="outline" className="text-[8px] h-3.5 px-1">
+                              Web only
+                            </Badge>
+                          )}
+                          {p.surface === "flutter" && (
+                            <Badge variant="outline" className="text-[8px] h-3.5 px-1">
+                              App only
+                            </Badge>
+                          )}
+                          {cmsRow?.is_published && (
+                            <Badge className="text-[8px] h-3.5 px-1 bg-emerald-500/10 text-emerald-600 border-emerald-500/20">
+                              Published
+                            </Badge>
+                          )}
+                          {p.editor.kind === "cms" && !cmsRow && (
+                            <Badge variant="outline" className="text-[8px] h-3.5 px-1 bg-amber-500/10 text-amber-700 border-amber-500/30">
+                              Not seeded
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="text-[10px] text-muted-foreground font-mono truncate">
+                          {p.webPath && <span>web {p.webPath}</span>}
+                          {p.webPath && p.flutterRoute && <span> · </span>}
+                          {p.flutterRoute && <span>app {p.flutterRoute}</span>}
+                        </p>
+                        {p.notes && (
+                          <p className="text-[10px] text-muted-foreground/70 mt-0.5 truncate">
+                            {p.notes}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {p.webPath && (
+                          <button
+                            onClick={() => window.open(p.webPath, "_blank")}
+                            className="p-1.5 rounded-lg hover:bg-muted transition-colors text-muted-foreground"
+                            title="Open on web"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {p.editor.kind === "cms" && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-[10px] px-2 gap-1"
+                            onClick={() => onOpenCms(p.editor.kind === "cms" ? p.editor.slug : "")}
+                          >
+                            <Pencil className="w-3 h-3" />
+                            {cmsRow ? "Edit copy" : "Seed & edit"}
+                          </Button>
+                        )}
+                        {p.editor.kind === "admin" && (
+                          <a href={p.editor.href}>
+                            <Button size="sm" variant="outline" className="h-7 text-[10px] px-2 gap-1">
+                              <Pencil className="w-3 h-3" /> {p.editor.label}
+                            </Button>
+                          </a>
+                        )}
+                        {p.editor.kind === "settings" && (
+                          <a href={`/super-admin/settings?tab=${p.editor.tab}`}>
+                            <Button size="sm" variant="outline" className="h-7 text-[10px] px-2 gap-1">
+                              <Pencil className="w-3 h-3" /> Settings → {p.editor.tab}
+                            </Button>
+                          </a>
+                        )}
+                        {p.editor.kind === "code-only" && (
+                          <span className="text-[10px] text-muted-foreground/60 italic px-2">
+                            code-only
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           ))}

@@ -7,14 +7,29 @@ const CACHE_TTL = 120;
 const CACHE_PREFIX = "banners:";
 
 export interface HeroBannerInput {
-  imageUrl?:  string;
-  linkUrl?:   string;
-  placement?: string;
-  altText?:   string | null;
-  startsAt?:  string | null;
-  endsAt?:    string | null;
-  sortOrder?: number;
-  isActive?:  boolean;
+  imageUrl?:      string;
+  mobileImageUrl?: string | null;
+  linkUrl?:       string;
+  placement?:     string;
+  altText?:       string | null;
+  startsAt?:      string | null;
+  endsAt?:        string | null;
+  sortOrder?:     number;
+  isActive?:      boolean;
+  // Per-banner text overlay — empty/null = image-only legacy render.
+  tagline?:       string | null;
+  heading?:       string | null;
+  headingAccent?: string | null;
+  subtitle?:      string | null;
+  button1Text?:   string | null;
+  button1Link?:   string | null;
+  button2Text?:   string | null;
+  button2Link?:   string | null;
+  // Per-banner color overrides — CSS color or gradient strings.
+  textBgColor?:   string | null;
+  textColor?:     string | null;
+  accentColor?:   string | null;
+  buttonColor?:   string | null;
 }
 
 @Injectable()
@@ -51,8 +66,13 @@ export class HeroBannersService {
           },
           orderBy: { sortOrder: "asc" },
           select: {
-            id: true, imageUrl: true, linkUrl: true,
+            id: true, imageUrl: true, mobileImageUrl: true, linkUrl: true,
             placement: true, altText: true, sortOrder: true,
+            tagline: true, heading: true, headingAccent: true, subtitle: true,
+            button1Text: true, button1Link: true,
+            button2Text: true, button2Link: true,
+            textBgColor: true, textColor: true,
+            accentColor: true, buttonColor: true,
           },
         });
       },
@@ -73,6 +93,22 @@ export class HeroBannersService {
     return b;
   }
 
+  /**
+   * Drop the public-list cache for a placement. Called after every write so
+   * admin edits surface within the next request instead of waiting up to
+   * CACHE_TTL (120 s) for the cached value to expire. Without this the
+   * symptom was "I uploaded a banner but it's not on the homepage" for
+   * up to two minutes after each save.
+   */
+  private async invalidate(placement?: string) {
+    if (placement) {
+      await this.cache.del(`${CACHE_PREFIX}active:${placement}`);
+    } else {
+      // Conservative blanket purge when we don't know the placement.
+      await this.cache.delByPattern?.(`${CACHE_PREFIX}*`);
+    }
+  }
+
   async create(data: HeroBannerInput) {
     if (!data.imageUrl) throw new BadRequestException("imageUrl is required");
 
@@ -85,27 +121,43 @@ export class HeroBannersService {
       );
     }
 
-    return this.prisma.heroBanner.create({
+    const row = await this.prisma.heroBanner.create({
       data: {
-        imageUrl:  data.imageUrl,
-        linkUrl:   data.linkUrl ?? "/shop",
+        imageUrl:      data.imageUrl,
+        mobileImageUrl: data.mobileImageUrl ?? null,
+        linkUrl:       data.linkUrl ?? "/shop",
         placement,
         altText:   data.altText ?? null,
         startsAt:  data.startsAt ? new Date(data.startsAt) : null,
         endsAt:    data.endsAt   ? new Date(data.endsAt)   : null,
         sortOrder: data.sortOrder ?? existing, // append at end by default
         isActive:  data.isActive ?? true,
+        tagline:       data.tagline       ?? null,
+        heading:       data.heading       ?? null,
+        headingAccent: data.headingAccent ?? null,
+        subtitle:      data.subtitle      ?? null,
+        button1Text:   data.button1Text   ?? null,
+        button1Link:   data.button1Link   ?? null,
+        button2Text:   data.button2Text   ?? null,
+        button2Link:   data.button2Link   ?? null,
+        textBgColor:   data.textBgColor   ?? null,
+        textColor:     data.textColor     ?? null,
+        accentColor:   data.accentColor   ?? null,
+        buttonColor:   data.buttonColor   ?? null,
       },
     });
+    await this.invalidate(placement);
+    return row;
   }
 
   async update(id: string, data: HeroBannerInput) {
-    await this.getOne(id);
-    return this.prisma.heroBanner.update({
+    const before = await this.getOne(id);
+    const row = await this.prisma.heroBanner.update({
       where: { id },
       data: {
-        imageUrl:  data.imageUrl,
-        linkUrl:   data.linkUrl,
+        imageUrl:       data.imageUrl,
+        mobileImageUrl: data.mobileImageUrl,
+        linkUrl:        data.linkUrl,
         placement: data.placement,
         altText:   data.altText,
         startsAt:  data.startsAt === undefined
@@ -116,13 +168,33 @@ export class HeroBannersService {
                      : data.endsAt   ? new Date(data.endsAt)   : null,
         sortOrder: data.sortOrder,
         isActive:  data.isActive,
+        // Text-overlay fields — `undefined` = "leave alone", null = "clear".
+        tagline:       data.tagline,
+        heading:       data.heading,
+        headingAccent: data.headingAccent,
+        subtitle:      data.subtitle,
+        button1Text:   data.button1Text,
+        button1Link:   data.button1Link,
+        button2Text:   data.button2Text,
+        button2Link:   data.button2Link,
+        textBgColor:   data.textBgColor,
+        textColor:     data.textColor,
+        accentColor:   data.accentColor,
+        buttonColor:   data.buttonColor,
       },
     });
+    // Invalidate both old and new placement in case it changed.
+    await this.invalidate(before.placement);
+    if (data.placement && data.placement !== before.placement) {
+      await this.invalidate(data.placement);
+    }
+    return row;
   }
 
   async remove(id: string) {
-    await this.getOne(id);
+    const before = await this.getOne(id);
     await this.prisma.heroBanner.delete({ where: { id } });
+    await this.invalidate(before.placement);
     return { ok: true };
   }
 
@@ -143,6 +215,7 @@ export class HeroBannersService {
         }),
       ),
     );
+    await this.invalidate(placement);
     return { ok: true, count: ids.length };
   }
 }

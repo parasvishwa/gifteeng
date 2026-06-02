@@ -3,21 +3,39 @@
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.USE_FINGERPRINT" />
 
-    <!-- SMS OTP autofill -->
-    <uses-permission android:name="android.permission.RECEIVE_SMS" />
-    <uses-permission android:name="android.permission.READ_SMS" />
+    <!-- SMS OTP autofill is handled via the Google Play Services SMS Retriever
+         API (see <receiver> below). It does NOT need READ_SMS / RECEIVE_SMS —
+         and those are "sensitive permissions" on the Play Store that auto-
+         reject apps unless we file a separate declaration form.
+         Removed to keep the listing approvable. The SmsRetrieverReceiver
+         registered below uses Google Play Services' SEND permission, which
+         is not a user-facing permission. -->
 
     <!-- Location — for address auto-fill in Add Address sheet -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
+    <!-- Camera — image_picker for product customisation + reviews -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- Photo / media access — Android 13+ split READ_EXTERNAL_STORAGE
+         into per-type permissions. Both kept so image_picker works on
+         older + newer devices. -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+
+    <!-- Push notifications — Android 13 (API 33) requires this at runtime. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <!-- Internet — for API calls and Nominatim reverse geocoding -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application
-        android:label="gifteeng_app"
+        android:label="Gifteeng"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:usesCleartextTraffic="false">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -65,6 +83,24 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- url_launcher: needed on Android 11+ to launch URLs in browsers -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="http" />
+        </intent>
+        <!-- url_launcher: tel: + mailto: schemes -->
+        <intent>
+            <action android:name="android.intent.action.DIAL" />
+            <data android:scheme="tel" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="mailto" />
         </intent>
     </queries>
 </manifest>

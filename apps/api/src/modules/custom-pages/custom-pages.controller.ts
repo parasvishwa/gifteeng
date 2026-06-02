@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  NotFoundException,
   Param,
   Patch,
   Post,
@@ -28,6 +29,25 @@ const createSchema = z.object({
 const updateSchema = createSchema
   .partial()
   .extend({ updated_at: z.string().optional() });
+
+// ──────────────────────────────────────────────────────────────────────────
+// Public read-only endpoint — no auth, only returns published pages.
+// Lives at /api/custom-pages/by-slug/:slug so the web app's /page/[slug]
+// SSR route can render CMS-managed copy without needing an admin token.
+// ──────────────────────────────────────────────────────────────────────────
+@ApiTags("custom-pages-public")
+@Controller("custom-pages")
+export class PublicCustomPagesController {
+  constructor(private readonly customPages: CustomPagesService) {}
+
+  @Get("by-slug/:slug")
+  async bySlug(@Param("slug") slug: string) {
+    const rows = await this.customPages.findAll(slug);
+    const match = rows.find((p) => p.slug === slug && p.is_published);
+    if (!match) throw new NotFoundException();
+    return match;
+  }
+}
 
 @ApiTags("custom-pages")
 @ApiBearerAuth()

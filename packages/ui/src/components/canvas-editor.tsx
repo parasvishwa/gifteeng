@@ -2,11 +2,18 @@
 
 import * as React from "react";
 import { useState, useRef, useCallback, useEffect } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import {
+  useFloating, offset as fuiOffset, flip, shift,
+  FloatingPortal,
+} from "@floating-ui/react";
+import { useGesture } from "@use-gesture/react";
+import { useHotkeys } from "react-hotkeys-hook";
 import {
   Upload, Type, Square, Circle, Triangle, Trash2, Sparkles, Heart, Diamond,
   Hexagon, Layers, Download, Undo2, Redo2, ArrowRight, Wand2, Eye, EyeOff,
   LayoutTemplate, ImageIcon, ChevronUp, ChevronDown, ChevronsUp, ChevronsDown,
-  Maximize2, X, Star, Pencil,
+  Maximize2, X, Star, Pencil, QrCode,
 } from "lucide-react";
 import {
   Canvas as FabricCanvas, FabricImage, FabricText, Rect,
@@ -83,7 +90,7 @@ export interface CanvasEditorProps {
   fileUploadUrl?: string;
 }
 
-type ToolMode = "select" | "text" | "shape" | "upload" | "ai" | "images" | "templates" | "draw";
+type ToolMode = "select" | "text" | "shape" | "upload" | "ai" | "images" | "templates" | "draw" | "qr";
 type ShapeType = "rect" | "circle" | "triangle" | "heart" | "diamond" | "hexagon" | "star" | "arrow" | "custom";
 
 interface DesignTemplateRecord {
@@ -300,12 +307,33 @@ function uploadUserFile(file: File): Promise<string> {
 /**
  * Server upload: POST the file to uploadUrl and return the persistent URL.
  * Keeps canvas JSON lean — stores a URL instead of a multi-MB base64 blob.
+ *
+ * Auth: /api/files/upload requires a bearer JWT (b2c or b2b) OR a
+ * non-empty X-Cart-Session header (for guest customers mid-checkout).
+ * We attach whichever is available from the host page's localStorage.
+ * Without this, the upload silently 401s, the image falls back to a
+ * base64 data URI, and the canvas JSON balloons to multiple MB.
  */
 async function uploadToServer(file: File, uploadUrl: string): Promise<string> {
   const form = new FormData();
   form.append("file", file);
   form.append("ownerType", "customization");
-  const res = await fetch(uploadUrl, { method: "POST", body: form });
+
+  const headers: Record<string, string> = {};
+  if (typeof window !== "undefined") {
+    try {
+      const b2c = window.localStorage.getItem("gifteeng.b2c.token");
+      if (b2c) headers.Authorization = `Bearer ${b2c}`;
+      else {
+        const b2b = window.localStorage.getItem("gifteeng.b2b.token");
+        if (b2b) headers.Authorization = `Bearer ${b2b}`;
+      }
+      const cartSession = window.localStorage.getItem("gifteeng.cart.session");
+      if (cartSession) headers["X-Cart-Session"] = cartSession;
+    } catch { /* private mode / SSR */ }
+  }
+
+  const res = await fetch(uploadUrl, { method: "POST", body: form, headers });
   if (!res.ok) throw new Error(`Upload failed (${res.status})`);
   const data = await res.json() as { url?: string };
   if (!data.url) throw new Error("No URL in upload response");
@@ -513,6 +541,16 @@ export function CanvasEditor({
   const [popupTool, setPopupTool] = useState<ToolMode | null>(null);
   const [, forceUpdate] = useState(0);
   const [templates, setTemplates] = useState<DesignTemplateRecord[]>(BUILTIN_TEMPLATES);
+
+  // ── Phase B/C additions ─────────────────────────────────────────────────────
+  // colorthief: palette extracted from the last uploaded image
+  const [extractedPalette, setExtractedPalette] = useState<string[]>([]);
+  // QR code tool
+  const [qrUrl, setQrUrl] = useState("https://gifteeng.com");
+  const [qrFg, setQrFg] = useState("#1A1A2E");
+  // Floating mini-toolbar anchor (client coords of selected object center-top)
+  const [floatingAnchorEl, setFloatingAnchorEl] = useState<HTMLElement | null>(null);
+  const floatingVirtualRef = useRef<{ getBoundingClientRect: () => DOMRect } | null>(null);
   const [templateCategory, setTemplateCategory] = useState("All");
   const [stockImages, setStockImages] = useState<StockImageRecord[]>([]);
   const [fontOptions, setFontOptions] = useState<FontOption[]>(defaultFontOptions);
@@ -545,6 +583,46 @@ export function CanvasEditor({
     })();
     return () => { cancelled = true; };
   }, []);
+
+  // ── @floating-ui/react — mini toolbar near selected object ──────────────
+  const { refs: floatingRefs, floatingStyles, update: updateFloating } = useFloating({
+    placement: "top",
+    middleware: [fuiOffset(8), flip(), shift({ padding: 8 })],
+  });
+
+  // Keep floatingVirtualRef in sync with canvasContainerRef + Fabric selection
+  const updateFloatingAnchor = useCallback(() => {
+    const canvas = fabricRef.current;
+    const container = canvasContainerRef.current;
+    if (!canvas || !container) {
+      setFloatingAnchorEl(null);
+      return;
+    }
+    const active = canvas.getActiveObject() as any;
+    if (!active) {
+      setFloatingAnchorEl(null);
+      return;
+    }
+    const br = active.getBoundingRect();
+    const containerRect = container.getBoundingClientRect();
+    const anchorRect = {
+      left: containerRect.left + br.left,
+      top: containerRect.top + br.top,
+      right: containerRect.left + br.left + br.width,
+      bottom: containerRect.top + br.top + br.height,
+      width: br.width,
+      height: br.height,
+      x: containerRect.left + br.left,
+      y: containerRect.top + br.top,
+      toJSON: () => ({}),
+    } as DOMRect;
+    const virtualEl = { getBoundingClientRect: () => anchorRect };
+    floatingVirtualRef.current = virtualEl;
+    floatingRefs.setReference(virtualEl as any);
+    // Trigger re-render so FloatingUI recalculates position
+    setFloatingAnchorEl(container);
+    updateFloating?.();
+  }, [updateFloating, floatingRefs]);
 
   // ── Fire initial onChange once canvas is ready (even with empty canvas) ──
   // Without this, designs[i].change stays null until the user manually edits,
@@ -810,9 +888,12 @@ export function CanvasEditor({
       }
     };
 
-    canvas.on("selection:created", () => { setHasSelection(true); syncSelected(); layersTick((n) => n + 1); });
-    canvas.on("selection:updated", () => { setHasSelection(true); syncSelected(); layersTick((n) => n + 1); });
-    canvas.on("selection:cleared", () => { setHasSelection(false); layersTick((n) => n + 1); });
+    canvas.on("selection:created", () => { setHasSelection(true); syncSelected(); layersTick((n) => n + 1); updateFloatingAnchor(); });
+    canvas.on("selection:updated", () => { setHasSelection(true); syncSelected(); layersTick((n) => n + 1); updateFloatingAnchor(); });
+    canvas.on("selection:cleared", () => { setHasSelection(false); layersTick((n) => n + 1); setFloatingAnchorEl(null); });
+    canvas.on("object:moving", () => updateFloatingAnchor());
+    canvas.on("object:scaling", () => updateFloatingAnchor());
+    canvas.on("object:rotating", () => updateFloatingAnchor());
     canvas.on("object:modified", (e: any) => {
       // Rect: bake scale into width/height so rx/ry stay at their
       // authored pixel radius. Without this, scaling a rounded rect
@@ -1036,6 +1117,31 @@ export function CanvasEditor({
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  // ── @use-gesture/react — mobile pinch-to-zoom on the canvas container ──
+  // We track the CSS transform scale on a wrapper element; Fabric's own zoom
+  // is NOT changed (export resolution stays constant). This gives a "viewport
+  // zoom" feel without mutating the design data.
+  const [gestureScale, setGestureScale] = useState(1);
+  const gestureScaleRef = useRef(1);
+
+  useGesture(
+    {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      onPinch: ({ offset: [scale], memo }: any) => {
+        const clamped = Math.min(Math.max(scale, 0.4), 3);
+        gestureScaleRef.current = clamped;
+        setGestureScale(clamped);
+        return memo;
+      },
+      onPinchEnd: () => { /* nothing — keep scale until next pinch */ },
+    },
+    {
+      target: canvasContainerRef,
+      eventOptions: { passive: false },
+      pinch: { scaleBounds: { min: 0.4, max: 3 }, rubberband: true },
+    }
+  );
 
   // ── Real-time text + shape updaters ──────────────────────────────────────
   const updateSelectedTextFont = useCallback((fontIdx: number): void => {
@@ -1397,63 +1503,32 @@ export function CanvasEditor({
     });
   }, [emitChange]);
 
-  // ── Keyboard shortcuts: Ctrl/Cmd+Z (undo), Ctrl+Shift+Z / Ctrl+Y (redo)
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      // Ignore when typing in a text field
-      const target = e.target as HTMLElement | null;
-      const tag = (target?.tagName ?? "").toUpperCase();
-      if (tag === "INPUT" || tag === "TEXTAREA" || (target && target.isContentEditable)) return;
-      // Delete / Backspace → remove selected object (no modifier required)
-      if ((e.key === "Delete" || e.key === "Backspace") && !e.ctrlKey && !e.metaKey) {
-        const canvas = fabricRef.current;
-        if (!canvas) return;
-        const active = canvas.getActiveObject() as any;
-        if (!active) return;
-        // Never delete the product base / overlay / mask outline
-        if (active.__isBaseProduct || active.__isOverlay || active.__isMaskOutline) return;
-        e.preventDefault();
-        // Handle multi-selection (ActiveSelection)
-        if (active.type === "activeselection" && typeof active.forEachObject === "function") {
-          active.forEachObject((o: any) => canvas.remove(o));
-          canvas.discardActiveObject();
-        } else {
-          canvas.remove(active);
-        }
-        canvas.requestRenderAll();
-        pushHistory(canvas);
-        return;
-      }
-      const mod = e.ctrlKey || e.metaKey;
-      if (!mod) return;
-      const key = e.key.toLowerCase();
-      if (key === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
-      else if ((key === "z" && e.shiftKey) || key === "y") { e.preventDefault(); redo(); }
-      else if (key === "a") {
-        // Ctrl/Cmd+A → select every user-editable layer (skip product base,
-        // overlay, mask outline, and any in-progress pen preview).
-        const canvas = fabricRef.current;
-        if (!canvas) return;
-        e.preventDefault();
-        const all = canvas.getObjects() as unknown as Array<Record<string, any>>;
-        const selectable = all.filter((o) =>
-          !o.__isBaseProduct && !o.__isOverlay && !o.__isMaskOutline && !o.__isPenPreview && o.selectable !== false
-        ) as any[];
-        if (!selectable.length) return;
-        canvas.discardActiveObject();
-        if (selectable.length === 1) {
-          canvas.setActiveObject(selectable[0]);
-        } else {
-          const sel = new ActiveSelection(selectable, { canvas });
-          canvas.setActiveObject(sel);
-        }
-        canvas.requestRenderAll();
-        setHasSelection(true);
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [undo, redo, pushHistory]);
+  // ── Keyboard shortcuts via react-hotkeys-hook ────────────────────────────
+  // (deleteSelected is defined later in the file — hotkeys wired after its declaration)
+
+  // Ctrl/Cmd+A — select all editable layers
+  const selectAll = useCallback(() => {
+    const canvas = fabricRef.current;
+    if (!canvas) return;
+    const all = canvas.getObjects() as unknown as Array<Record<string, any>>;
+    const selectable = all.filter((o) =>
+      !o.__isBaseProduct && !o.__isOverlay && !o.__isMaskOutline && !o.__isPenPreview && o.selectable !== false
+    ) as any[];
+    if (!selectable.length) return;
+    canvas.discardActiveObject();
+    if (selectable.length === 1) {
+      canvas.setActiveObject(selectable[0]);
+    } else {
+      const sel = new ActiveSelection(selectable, { canvas });
+      canvas.setActiveObject(sel);
+    }
+    canvas.requestRenderAll();
+    setHasSelection(true);
+  }, []);
+
+  useHotkeys("ctrl+z,meta+z", () => undo(), { preventDefault: true, enableOnFormTags: false });
+  useHotkeys("ctrl+shift+z,meta+shift+z,ctrl+y,meta+y", () => redo(), { preventDefault: true, enableOnFormTags: false });
+  useHotkeys("ctrl+a,meta+a", (e) => { e.preventDefault(); selectAll(); }, { preventDefault: true, enableOnFormTags: false });
 
   // ── Add text / shape / image ─────────────────────────────────────────────
   const addText = useCallback((): void => {
@@ -1584,10 +1659,65 @@ export function CanvasEditor({
         fixLayerOrder(canvas);
         pushHistory(canvas);
         toast({ title: "Image added" });
+        // ── colorthief: extract palette from uploaded image ───────────────
+        // We use the native HTMLImageElement that Fabric already loaded.
+        const htmlImg = (img as any).getElement?.() as HTMLImageElement | undefined;
+        if (htmlImg) {
+          import("colorthief").then((mod) => {
+            try {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              const CT = (mod as any).default ?? (mod as any);
+              const ct = new CT();
+              const palette: [number, number, number][] = ct.getPalette(htmlImg, 6);
+              const hexPalette = palette.map(
+                ([r, g, b]) => "#" + [r, g, b].map((v) => v.toString(16).padStart(2, "0")).join("")
+              );
+              setExtractedPalette(hexPalette);
+            } catch {
+              /* colorthief may fail on CORS images — silently ignore */
+            }
+          }).catch(() => { /* package not loaded — ignore */ });
+        }
       });
     }).catch(() => toast({ title: "Upload failed", variant: "destructive" }));
     e.target.value = "";
   }, [pushHistory, fixLayerOrder, applyMaskClipToImage, maxImages, fileUploadUrl]);
+
+  // ── qr-code-styling: render a styled QR code and add it to the canvas ───
+  const addQrCode = useCallback(async (): Promise<void> => {
+    if (!fabricRef.current || !qrUrl.trim()) return;
+    try {
+      // @ts-ignore — qr-code-styling has no bundled TS declarations
+      const { default: QRCodeStyling } = await import("qr-code-styling");
+      const qrCanvas = document.createElement("canvas");
+      qrCanvas.width = 300;
+      qrCanvas.height = 300;
+      const qr = new QRCodeStyling({
+        width: 300,
+        height: 300,
+        data: qrUrl,
+        dotsOptions: { color: qrFg, type: "rounded" },
+        backgroundOptions: { color: "#ffffff" },
+        cornersSquareOptions: { type: "extra-rounded", color: qrFg },
+        cornersDotOptions: { type: "dot", color: qrFg },
+      });
+      await qr.append(qrCanvas);
+      const dataUrl = qrCanvas.toDataURL("image/png");
+      const img = await FabricImage.fromURL(dataUrl);
+      const canvas = fabricRef.current;
+      const cw = canvas.width || 400;
+      const ch = canvas.height || 400;
+      const scale = Math.min((cw * 0.35) / 300, (ch * 0.35) / 300);
+      img.set({ left: cw / 2, top: ch / 2, originX: "center", originY: "center", scaleX: scale, scaleY: scale });
+      canvas.add(img);
+      canvas.setActiveObject(img);
+      canvas.requestRenderAll();
+      pushHistory(canvas);
+      setActiveTool("select");
+    } catch {
+      toast({ title: "QR code failed", variant: "destructive" });
+    }
+  }, [qrUrl, qrFg, pushHistory]);
 
   const addStockImage = useCallback((url: string): void => {
     if (!fabricRef.current) return;
@@ -1644,7 +1774,11 @@ export function CanvasEditor({
     fabricRef.current.discardActiveObject();
     fabricRef.current.renderAll();
     pushHistory(fabricRef.current);
+    setFloatingAnchorEl(null);
   }, [pushHistory]);
+
+  // ── react-hotkeys-hook: Delete/Backspace wired to deleteSelected ─────────
+  useHotkeys("delete,backspace", deleteSelected, { preventDefault: true, enableOnFormTags: false });
 
   const bringForward = useCallback((): void => {
     if (!fabricRef.current) return;
@@ -1786,6 +1920,7 @@ export function CanvasEditor({
     { mode: "shape", icon: Square, label: "Shape" },
     { mode: "draw", icon: Pencil, label: "Draw" },
     { mode: "templates", icon: LayoutTemplate, label: "Templates" },
+    { mode: "qr", icon: QrCode, label: "QR" },   // qr-code-styling tool
   ];
   const tools = mode === "simple"
     ? allTools.filter((t) => t.mode === "text" || t.mode === "templates")
@@ -1917,6 +2052,11 @@ export function CanvasEditor({
               style={{
                 // Drop-shadow so the canvas "floats" on the dark workspace
                 boxShadow: "0 16px 50px -10px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.04)",
+                // Mobile pinch-zoom: scale transform (viewport only, not design data)
+                transform: gestureScale !== 1 ? `scale(${gestureScale})` : undefined,
+                transformOrigin: "center center",
+                transition: gestureScale === 1 ? "transform 0.2s ease-out" : undefined,
+                touchAction: "none",
               }}
             />
             {showMockup && (
@@ -2069,10 +2209,90 @@ export function CanvasEditor({
           />
         </div>
 
+        {/* ── @floating-ui/react: mini context toolbar near selected object ─── */}
+        {floatingAnchorEl && hasSelection && (
+          <FloatingPortal>
+            <div
+              ref={floatingRefs.setFloating}
+              style={{ ...floatingStyles, zIndex: 9999 }}
+            >
+              <motion.div
+                initial={{ opacity: 0, scale: 0.9, y: 4 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9, y: 4 }}
+                transition={{ duration: 0.12, ease: "easeOut" }}
+                className="flex items-center gap-0.5 rounded-lg px-1 py-1 shadow-2xl border border-white/10"
+                style={{ background: "#1f1f23" }}
+              >
+                {/* Delete */}
+                <button
+                  className="w-7 h-7 inline-flex items-center justify-center rounded-md hover:bg-red-500/20 text-red-400 hover:text-red-300 transition-colors"
+                  title="Delete (Del)"
+                  onClick={deleteSelected}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+                <div className="w-px h-4 bg-white/10 mx-0.5" />
+                {/* Bring forward / send back */}
+                <button
+                  className="w-7 h-7 inline-flex items-center justify-center rounded-md hover:bg-white/10 text-white/60 hover:text-white transition-colors"
+                  title="Bring Forward"
+                  onClick={() => {
+                    const canvas = fabricRef.current;
+                    const obj = canvas?.getActiveObject();
+                    if (obj && canvas) { canvas.bringObjectForward(obj); canvas.requestRenderAll(); pushHistory(canvas); }
+                  }}
+                >
+                  <ChevronUp className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  className="w-7 h-7 inline-flex items-center justify-center rounded-md hover:bg-white/10 text-white/60 hover:text-white transition-colors"
+                  title="Send Backward"
+                  onClick={() => {
+                    const canvas = fabricRef.current;
+                    const obj = canvas?.getActiveObject();
+                    if (obj && canvas) { canvas.sendObjectBackwards(obj); canvas.requestRenderAll(); pushHistory(canvas); }
+                  }}
+                >
+                  <ChevronDown className="w-3.5 h-3.5" />
+                </button>
+                <div className="w-px h-4 bg-white/10 mx-0.5" />
+                {/* Duplicate */}
+                <button
+                  className="w-7 h-7 inline-flex items-center justify-center rounded-md hover:bg-white/10 text-white/60 hover:text-white transition-colors"
+                  title="Duplicate (Ctrl+D)"
+                  onClick={() => {
+                    const canvas = fabricRef.current;
+                    const obj = canvas?.getActiveObject() as any;
+                    if (!obj || !canvas) return;
+                    obj.clone().then((clone: any) => {
+                      clone.set({ left: (obj.left || 0) + 20, top: (obj.top || 0) + 20 });
+                      canvas.add(clone);
+                      canvas.setActiveObject(clone);
+                      canvas.requestRenderAll();
+                      pushHistory(canvas);
+                    });
+                  }}
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                </button>
+              </motion.div>
+            </div>
+          </FloatingPortal>
+        )}
+
         {/* Text Panel — Photoshop "Character" popup
             Fixed-positioned floating card, dark theme, internal scroll.
             Positioned bottom-right on desktop, full-width at bottom on mobile. */}
+        <AnimatePresence>
         {activeTool === "text" && (
+          <motion.div
+            key="text-panel"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 12 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+          >
           <div
             id="customizer-toolbar"
             data-customizer-panel="text"
@@ -2230,7 +2450,9 @@ export function CanvasEditor({
               </p>
             )}
           </div>
+          </motion.div>
         )}
+        </AnimatePresence>
 
         {/* ── Layers panel (floating, draggable, Photoshop-style) ───── */}
         {layersOpen && (
@@ -2678,6 +2900,56 @@ export function CanvasEditor({
         )}
       </div>
 
+      {/* QR Code Panel */}
+      <AnimatePresence>
+      {activeTool === "qr" && (
+        <motion.div
+          key="qr-panel"
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 12 }}
+          transition={{ duration: 0.18, ease: "easeOut" }}
+          className="fixed md:absolute left-0 right-0 md:left-auto md:right-4 bottom-0 md:bottom-auto md:top-4 z-[200] md:w-[300px] rounded-t-xl md:rounded-xl shadow-2xl border p-3 space-y-3"
+          style={{ background: "#1f1f23", borderColor: "#2e2e33", color: "rgba(255,255,255,0.92)" }}
+          data-customizer-panel="qr"
+        >
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] font-black uppercase tracking-[0.22em] text-white/60">QR Code</p>
+            <button onClick={() => setActiveTool("select")} className="w-6 h-6 flex items-center justify-center rounded-md hover:bg-white/10 text-white/60">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          <div className="space-y-2">
+            <label className="block text-[10px] font-semibold uppercase tracking-widest text-white/50">URL or Text</label>
+            <input
+              type="url"
+              value={qrUrl}
+              onChange={(e) => setQrUrl(e.target.value)}
+              placeholder="https://gifteeng.com"
+              className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-white/25 outline-none focus:border-pink-400/60 focus:ring-1 focus:ring-pink-400/20"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-[10px] font-semibold uppercase tracking-widest text-white/50">Color</label>
+            <input
+              type="color"
+              value={qrFg}
+              onChange={(e) => setQrFg(e.target.value)}
+              className="w-8 h-8 rounded cursor-pointer border border-white/10 bg-transparent"
+            />
+            <span className="text-xs text-white/40">{qrFg}</span>
+          </div>
+          <button
+            onClick={addQrCode}
+            disabled={!qrUrl.trim()}
+            className="w-full text-[12px] font-bold py-2.5 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white hover:from-indigo-600 hover:to-violet-700 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Add QR to Design
+          </button>
+        </motion.div>
+      )}
+      </AnimatePresence>
+
       {/* Upload Dialog */}
       <Dialog open={popupTool === "upload"} onOpenChange={(open) => !open && setPopupTool(null)}>
         <DialogContent className="max-w-md">
@@ -2700,6 +2972,24 @@ export function CanvasEditor({
             <div className="bg-muted rounded-xl p-3">
               <p className="text-[10px] text-muted-foreground">Tip: You can also press <strong>Ctrl+V</strong> (or <strong>Cmd+V</strong> on Mac) to paste an image directly onto the canvas.</p>
             </div>
+            {/* colorthief: palette swatches extracted from last uploaded image */}
+            {extractedPalette.length > 0 && (
+              <div>
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground mb-1.5">Palette from your image</p>
+                <div className="flex gap-2 flex-wrap">
+                  {extractedPalette.map((hex) => (
+                    <button
+                      key={hex}
+                      title={`Use ${hex}`}
+                      onClick={() => { setTextColor(hex); setFillColor(hex); }}
+                      className="w-7 h-7 rounded-md border-2 border-transparent hover:border-primary transition-all shadow-sm hover:scale-110"
+                      style={{ background: hex }}
+                    />
+                  ))}
+                </div>
+                <p className="text-[10px] text-muted-foreground mt-1">Click any swatch to set as text / shape color</p>
+              </div>
+            )}
           </div>
         </DialogContent>
       </Dialog>

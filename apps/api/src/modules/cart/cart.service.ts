@@ -36,6 +36,7 @@ export class CartService {
       data: {
         cartId: cart.id,
         productId: input.productId,
+        sellerProductId: input.sellerProductId ?? null,
         qty: input.qty,
         variantOptions: input.variantOptions as any,
         customization: input.customization as any,
@@ -82,6 +83,7 @@ export class CartService {
       data: {
         cartId: cart.id,
         productId: input.productId,
+        sellerProductId: input.sellerProductId ?? null,
         qty: input.qty,
         variantOptions: input.variantOptions as any,
         customization: input.customization as any,

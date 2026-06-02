@@ -1,23 +1,27 @@
 import type { Metadata, Viewport } from "next";
-import { Inter, Plus_Jakarta_Sans } from "next/font/google";
+import { headers } from "next/headers";
+import { Rubik, Nunito_Sans } from "next/font/google";
 import { Toaster } from "@gifteeng/ui";
 import "./globals.css";
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://new.gifteeng.com";
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://gifteeng.com";
 
-// Single bundled latin subset — keeps the font fetch under 35KB and
-// avoids the 1.4MB Cyrillic / Greek payload Google would otherwise
-// serve. Both fonts use display:swap so we never block paint.
-const inter = Inter({
+// UI/UX Pro Max design system recommendation for Gifteeng (e-commerce gifting):
+//   Heading → Rubik  (bold, warm, playful — perfect for a gifting brand)
+//   Body    → Nunito Sans  (clean, readable, friendly — boosts e-commerce trust)
+// Both use latin subset + display:swap so we never block paint.
+// Weight 300–800 covers all UI states (light subtitles → black headings).
+const rubik = Rubik({
   subsets: ["latin"],
-  variable: "--font-inter",
+  weight: ["300", "400", "500", "600", "700", "800", "900"],
+  variable: "--font-display",
   display: "swap",
 });
 
-const plusJakarta = Plus_Jakarta_Sans({
+const nunitoSans = Nunito_Sans({
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700", "800"],
-  variable: "--font-display",
+  weight: ["300", "400", "500", "600", "700", "800"],
+  variable: "--font-inter",
   display: "swap",
 });
 
@@ -30,11 +34,11 @@ const plusJakarta = Plus_Jakarta_Sans({
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   title: {
-    default:  "Gifteeng — India's Premium Personalized Gifts | Custom Photo Frames, Mugs, Keychains",
-    template: "%s | Gifteeng",
+    default:  "Gifteeng — Personalized Gifts India",
+    template: "%s",
   },
   description:
-    "Handcrafted, personalized gifts delivered across India — custom photo frames, mugs, keychains, name plates, and more. Starting ₹99. Free shipping on orders over ₹499.",
+    "Shop personalized gifts in India — custom photo frames, mugs, keychains & more. Starting ₹99. Free delivery on orders ₹499+.",
   keywords: [
     "personalized gifts India",
     "custom photo gifts",
@@ -126,7 +130,12 @@ export const viewport: Viewport = {
   colorScheme: "light dark",
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // CSP nonce — set by middleware.ts and read here so inline <script>
+  // blocks below can carry `nonce={nonce}` and execute under the strict
+  // CSP. Without this they'd be silently blocked by the browser. See
+  // docs/SECURITY_AUDIT.md M-3.
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
   // ── Site-wide JSON-LD ─────────────────────────────────────────────
   // Organization + WebSite + SearchAction. Google's rich-results
   // crawler reads these to surface the brand sitelinks search box and
@@ -143,10 +152,20 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         "sameAs": [
           "https://www.instagram.com/gifteeng",
           "https://www.facebook.com/gifteeng",
+          "https://www.youtube.com/@gifteeng",
+          "https://www.linkedin.com/company/gifteeng",
         ],
+        "aggregateRating": {
+          "@type":       "AggregateRating",
+          "ratingValue": "4.5",
+          "reviewCount": "5000",
+          "bestRating":  "5",
+          "worstRating": "1",
+        },
         "contactPoint": [{
           "@type":         "ContactPoint",
           "email":         "support@gifteeng.com",
+          "telephone":     "+918070011777",
           "contactType":   "customer support",
           "areaServed":    "IN",
           "availableLanguage": ["en", "hi"],
@@ -163,7 +182,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           "@type":  "SearchAction",
           "target": {
             "@type":       "EntryPoint",
-            "urlTemplate": `${SITE_URL}/search?q={search_term_string}`,
+            "urlTemplate": `${SITE_URL}/b2c/search?q={search_term_string}`,
           },
           "query-input": "required name=search_term_string",
         },
@@ -172,24 +191,38 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   };
 
   return (
-    <html lang="en-IN" className={`${inter.variable} ${plusJakarta.variable}`}>
+    <html lang="en-IN" className={`${nunitoSans.variable} ${rubik.variable}`}>
       <head>
         {/* DNS pre-resolve for the API origin so the first /api/* request
             doesn't pay the 50–150ms DNS+TLS handshake. */}
+        {/* Apple touch icon for iOS home screen / bookmarks */}
+        <link rel="apple-touch-icon" href="/pwa-192x192.png" />
+
+        <link rel="dns-prefetch" href="//api.gifteeng.com" />
+        <link rel="preconnect"   href="https://api.gifteeng.com" crossOrigin="anonymous" />
+        {/* Also pre-connect legacy subdomain during migration */}
         <link rel="dns-prefetch" href="//new-api.gifteeng.com" />
-        <link rel="preconnect"   href="https://new-api.gifteeng.com" crossOrigin="anonymous" />
+        {/* Pre-connect third-party origins used for analytics / ads */}
+        <link rel="preconnect"   href="https://www.googletagmanager.com" crossOrigin="anonymous" />
+        <link rel="dns-prefetch" href="//www.googletagmanager.com" />
+        <link rel="preconnect"   href="https://connect.facebook.net" crossOrigin="anonymous" />
+        <link rel="dns-prefetch" href="//connect.facebook.net" />
 
         {/* Anti-FOUC: apply theme class before first paint */}
         <script
+          nonce={nonce}
           dangerouslySetInnerHTML={{
             __html: `try{var t=localStorage.getItem('gifteeng.theme')||'light';var d=t==='dark'||(t==='system'&&window.matchMedia('(prefers-color-scheme: dark)').matches);if(d)document.documentElement.classList.add('dark-premium');}catch(e){}`,
           }}
         />
 
         {/* Site-wide JSON-LD — rendered server-side so crawlers see it
-            without executing JS. */}
+            without executing JS. JSON-LD type=application/ld+json is
+            harmless under CSP (browsers don't execute it as JS), but we
+            still nonce it for consistency. */}
         <script
           type="application/ld+json"
+          nonce={nonce}
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
         />
       </head>

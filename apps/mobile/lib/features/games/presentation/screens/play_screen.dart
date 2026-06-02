@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:dio/dio.dart';
@@ -231,15 +232,20 @@ class PlayScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     // Gift Casino is always rendered in dark mode — immersive gambling aesthetic
     // regardless of the user's light / dark theme preference in the rest of the app.
-    final hubAsync = ref.watch(gamesHubProvider);
+    final hubAsync    = ref.watch(gamesHubProvider);
+    // Robust coin balance: /games/hub often returns coinBalance:0 even when the
+    // user has Goins (stale seed data). Use the home-screen's coinBalanceProvider
+    // as the authoritative source — it picks max(totalBalance, balance, coinBalance)
+    // from /coins/balance and correctly handles all field-name variants.
+    final coinBalance = ref.watch(coinBalanceProvider).valueOrNull ?? 0;
     return Theme(
       data: Theme.of(context).copyWith(brightness: Brightness.dark),
       child: Scaffold(
-        backgroundColor: GColors.bg0, // always dark casino background
+        backgroundColor: const Color(0xFF1A0000), // maroon casino background
         body: hubAsync.when(
           loading: () => const _LoadingShimmer(),
-          error:   (_, __) => const _PlayBody(hub: null),
-          data:    (hub)   => _PlayBody(hub: hub),
+          error:   (_, __) => _PlayBody(hub: null,  coinBalance: coinBalance),
+          data:    (hub)   => _PlayBody(hub: hub,   coinBalance: coinBalance),
         ),
       ),
     );
@@ -281,7 +287,10 @@ class _LoadingShimmer extends StatelessWidget {
 
 class _PlayBody extends StatelessWidget {
   final Map<String, dynamic>? hub;
-  const _PlayBody({required this.hub});
+  /// Fallback balance from coinBalanceProvider — used when hub['coinBalance']
+  /// is 0 (stale data) but the user actually has Goins.
+  final int coinBalance;
+  const _PlayBody({required this.hub, this.coinBalance = 0});
 
   List<Map<String, dynamic>> get _games {
     if (hub == null) return _kGames;
@@ -318,7 +327,12 @@ class _PlayBody extends StatelessWidget {
     }).toList();
   }
 
-  int get _balance => (hub?['coinBalance'] as num?)?.toInt() ?? 0;
+  int get _balance {
+    final hubBal = (hub?['coinBalance'] as num?)?.toInt() ?? 0;
+    // Prefer hub value when > 0. If hub returns stale 0, fall back to the
+    // authoritative coinBalanceProvider value passed from PlayScreen.
+    return hubBal > 0 ? hubBal : coinBalance;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -347,17 +361,11 @@ class _PlayBody extends StatelessWidget {
           child: _MarqueeTicker(),
         ),
 
-        const SliverToBoxAdapter(child: Gap(20)),
+        // ── 3. Daily reset countdown strip — first thing after ticker ───────
+        //      Keeps "don't break your streak" top-of-mind before anything else.
+        const SliverToBoxAdapter(child: _DailyResetBanner()),
 
-        // ── 3. Story banner ─────────────────────────────────────────────────
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: const _StoryBanner(),
-          ),
-        ),
-
-        const SliverToBoxAdapter(child: Gap(20)),
+        const SliverToBoxAdapter(child: Gap(16)),
 
         // ── 4. Free Daily Spin card ─────────────────────────────────────────
         SliverToBoxAdapter(
@@ -367,9 +375,43 @@ class _PlayBody extends StatelessWidget {
           ),
         ),
 
-        const SliverToBoxAdapter(child: Gap(28)),
+        const SliverToBoxAdapter(child: Gap(20)),
 
-        // ── 5. Section header ───────────────────────────────────────────────
+        // ── 5. Streak stats — moved up from position 8 ──────────────────────
+        //      Streak is the #1 daily-return hook — show it before games so
+        //      users feel the cost of skipping before they choose to scroll away.
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: _StreakStatsSection(hub: hub),
+          ),
+        ),
+
+        const SliverToBoxAdapter(child: Gap(20)),
+
+        // ── 6. Win-to-buy banner — only shown when user has Goins ───────────
+        //      Closes the win→shop loop immediately below the streak proof.
+        if (_balance > 0) ...[
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: _WinToBuyBanner(balance: _balance),
+            ),
+          ),
+          const SliverToBoxAdapter(child: Gap(20)),
+        ],
+
+        // ── 7. Story banner (social proof) ──────────────────────────────────
+        SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: const _StoryBanner(),
+          ),
+        ),
+
+        const SliverToBoxAdapter(child: Gap(24)),
+
+        // ── 8. Section header ───────────────────────────────────────────────
         SliverToBoxAdapter(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -382,7 +424,7 @@ class _PlayBody extends StatelessWidget {
 
         const SliverToBoxAdapter(child: Gap(16)),
 
-        // ── 6. 2×2 game grid ────────────────────────────────────────────────
+        // ── 9. 2×2 game grid ────────────────────────────────────────────────
         SliverPadding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           sliver: SliverGrid(
@@ -405,7 +447,7 @@ class _PlayBody extends StatelessWidget {
 
         const SliverToBoxAdapter(child: Gap(32)),
 
-        // ── 7. How to Play ──────────────────────────────────────────────────
+        // ── 10. How to Play ──────────────────────────────────────────────────
         SliverToBoxAdapter(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -415,17 +457,7 @@ class _PlayBody extends StatelessWidget {
 
         const SliverToBoxAdapter(child: Gap(28)),
 
-        // ── 8. Streak stats ─────────────────────────────────────────────────
-        SliverToBoxAdapter(
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: _StreakStatsSection(hub: hub),
-          ),
-        ),
-
-        const SliverToBoxAdapter(child: Gap(28)),
-
-        // ── 9. Sticker Album teaser ─────────────────────────────────────────
+        // ── 11. Sticker Album teaser ─────────────────────────────────────────
         SliverToBoxAdapter(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -435,7 +467,7 @@ class _PlayBody extends StatelessWidget {
 
         const SliverToBoxAdapter(child: Gap(28)),
 
-        // ── 10. Recent Winners ──────────────────────────────────────────────
+        // ── 12. Recent Winners ──────────────────────────────────────────────
         SliverToBoxAdapter(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -663,6 +695,198 @@ class _MarqueeTickerState extends State<_MarqueeTicker>
         },
       ),
     );
+  }
+}
+
+// ─── Daily Reset Banner ───────────────────────────────────────────────────────
+// A thin amber strip just below the marquee ticker. Ticks every second.
+// Purpose: keep "don't break your streak" top-of-mind at the very first
+// glance, before the user decides whether to engage or bounce.
+
+class _DailyResetBanner extends StatefulWidget {
+  const _DailyResetBanner();
+  @override
+  State<_DailyResetBanner> createState() => _DailyResetBannerState();
+}
+
+class _DailyResetBannerState extends State<_DailyResetBanner> {
+  late Timer _timer;
+  late int _secsLeft;
+
+  @override
+  void initState() {
+    super.initState();
+    _secsLeft = _secondsToMidnight();
+    _timer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (!mounted) return;
+      setState(() => _secsLeft = _secondsToMidnight());
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 34,
+      color: const Color(0xFFFB923C).withValues(alpha: 0.08),
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(
+        children: [
+          const Text('⏱', style: TextStyle(fontSize: 12)),
+          const Gap(6),
+          Expanded(
+            child: Text(
+              'Daily games reset in ${_countdownLabel(_secsLeft)} — don\'t break your streak',
+              style: GoogleFonts.inter(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: const Color(0xFFFB923C).withValues(alpha: 0.9),
+                letterSpacing: 0.1,
+              ),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Win-to-Buy Banner ────────────────────────────────────────────────────────
+// Shown only when the user has a positive Goins balance. Lives between the
+// streak section and the social-proof story banner. The goal is to surface
+// the win→shop loop immediately, while the user is primed by seeing their
+// streak, before they scroll into the game grid.
+
+class _WinToBuyBanner extends StatefulWidget {
+  final int balance;
+  const _WinToBuyBanner({required this.balance});
+  @override
+  State<_WinToBuyBanner> createState() => _WinToBuyBannerState();
+}
+
+class _WinToBuyBannerState extends State<_WinToBuyBanner> {
+  late Timer _timer;
+  late int _secsLeft;
+
+  @override
+  void initState() {
+    super.initState();
+    _secsLeft = _secondsToMidnight();
+    _timer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (!mounted) return;
+      setState(() => _secsLeft = _secondsToMidnight());
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () {
+        HapticFeedback.mediumImpact();
+        context.push('/shop');
+      },
+      child: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              _kGold.withValues(alpha: 0.18),
+              _kGold.withValues(alpha: 0.05),
+            ],
+          ),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+              color: _kGold.withValues(alpha: 0.35), width: 1.5),
+          boxShadow: [
+            BoxShadow(
+              color: _kGold.withValues(alpha: 0.08),
+              blurRadius: 18,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.fromLTRB(18, 14, 14, 14),
+        child: Row(
+          children: [
+            Container(
+              width: 44, height: 44,
+              decoration: BoxDecoration(
+                color: _kGold.withValues(alpha: 0.15),
+                shape: BoxShape.circle,
+                border: Border.all(color: _kGold.withValues(alpha: 0.3)),
+              ),
+              child: const Center(
+                child: Text('🛒', style: TextStyle(fontSize: 20)),
+              ),
+            ),
+            const Gap(14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    'You have ${widget.balance}G ready to spend',
+                    style: GoogleFonts.inter(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                      color: _kGold,
+                      letterSpacing: -0.2,
+                    ),
+                  ),
+                  const Gap(3),
+                  Text(
+                    'Offers reset in ${_countdownLabel(_secsLeft)} — shop now',
+                    style: GoogleFonts.inter(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.white.withValues(alpha: 0.5),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Gap(10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: BoxDecoration(
+                color: _kGold,
+                borderRadius: BorderRadius.circular(999),
+                boxShadow: [
+                  BoxShadow(
+                    color: _kGold.withValues(alpha: 0.40),
+                    blurRadius: 10,
+                    offset: const Offset(0, 3),
+                  ),
+                ],
+              ),
+              child: Text(
+                'Shop →',
+                style: GoogleFonts.inter(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  color: Colors.black,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ).animate().fadeIn(duration: 400.ms).slideY(begin: 0.06, end: 0);
   }
 }
 
@@ -911,7 +1135,7 @@ class _FreeDailySpinCard extends StatelessWidget {
                     ),
                     const Gap(8),
                     Text(
-                      'No Goins needed — spin once\nper day, win real prizes!',
+                      'No Goins needed. Spin once daily.\nMiss it and your streak breaks.',
                       style: GoogleFonts.inter(
                         fontSize: 12.5,
                         fontWeight: FontWeight.w500,
@@ -2197,7 +2421,7 @@ class _ScratchBody extends StatelessWidget {
 
 // ─── Result content (inside dialog) ──────────────────────────────────────────
 
-class _ResultContent extends StatelessWidget {
+class _ResultContent extends ConsumerWidget {
   final bool won;
   final Map<String, dynamic>? result;
   final bool compact; // when true, smaller sizes for use inside scratch card
@@ -2216,7 +2440,7 @@ class _ResultContent extends StatelessWidget {
   ];
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final _c       = GColors.of(context);
     final _kBg     = _c.bg0;
     final _kCard   = _c.bg1;
@@ -2225,6 +2449,11 @@ class _ResultContent extends StatelessWidget {
     final _kText0  = _c.text0;
     final _kText1  = _c.text1;
     final _kText2  = _c.text2;
+    // Guest users can play the game but can't bank their winnings —
+    // we swap the "Use your Goins in the shop" CTA for a "Sign in to
+    // save your Goins" prompt that takes them to /auth.
+    final isLoggedIn =
+        ref.watch(authTokenNotifierProvider).valueOrNull != null;
     final prize  = (result?['prize'] as Map?) ?? {};
     final coinsFromApi = (result?['coinsEarned'] as num?)?.toInt() ?? 0;
 
@@ -2397,9 +2626,116 @@ class _ResultContent extends StatelessWidget {
                       duration: 500.ms, curve: Curves.elasticOut),
             ],
           ),
+
+          // ── Post-win CTA — different for guests vs signed-in users ─────
+          // Signed-in: shop CTA closes the win→buy conversion loop (the
+          // user just won and the dopamine is high).
+          // Guest: their Goins aren't actually saved to an account yet,
+          // so we swap the shop CTA for a "Sign in to save your Goins"
+          // prompt that routes to /auth. This satisfies the requirement
+          // that wins must be claimable only by signed-in users while
+          // still letting guests experience the game.
+          const Gap(16),
+          if (isLoggedIn)
+            GestureDetector(
+              onTap: () {
+                HapticFeedback.mediumImpact();
+                Navigator.of(context).pop();
+                context.push('/shop');
+              },
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      _kGold.withValues(alpha: 0.18),
+                      _kGold.withValues(alpha: 0.06),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                      color: _kGold.withValues(alpha: 0.40), width: 1.5),
+                ),
+                child: Center(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Text('🛒', style: TextStyle(fontSize: 15)),
+                      const Gap(8),
+                      Text(
+                        'Use your Goins in the shop →',
+                        style: GoogleFonts.inter(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                          color: _kGold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ).animate()
+                .fadeIn(duration: 400.ms, delay: 700.ms)
+                .slideY(begin: 0.1, end: 0,
+                    duration: 400.ms, curve: Curves.easeOut)
+          else
+            GestureDetector(
+              onTap: () async {
+                HapticFeedback.mediumImpact();
+                // Clear guest mode so /auth doesn't bounce back to /.
+                await ref
+                    .read(guestModeNotifierProvider.notifier)
+                    .setEnabled(false);
+                if (!context.mounted) return;
+                Navigator.of(context).pop();
+                GoRouter.of(context).go('/auth');
+              },
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 14),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      GColors.brand,
+                      GColors.brand.withValues(alpha: 0.85),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: [
+                    BoxShadow(
+                      color: GColors.brand.withValues(alpha: 0.30),
+                      blurRadius: 14, spreadRadius: -2,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Center(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.lock_open_rounded,
+                          color: Colors.white, size: 16),
+                      const Gap(8),
+                      Text(
+                        'Sign in to save your Goins',
+                        style: GoogleFonts.inter(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ).animate()
+                .fadeIn(duration: 400.ms, delay: 700.ms)
+                .slideY(begin: 0.1, end: 0,
+                    duration: 400.ms, curve: Curves.easeOut),
         ],
         if (!compact) ...[
-          const Gap(24),
+          const Gap(16),
           GestureDetector(
             onTap: () {
               AudioService.instance.tap();
@@ -2464,6 +2800,40 @@ class _StreakStatsSection extends StatelessWidget {
           padding: const EdgeInsets.all(18),
           child: Column(
             children: [
+              // ── Streak danger bar — shown whenever streak > 0 ──────────────
+              // Urgency: losing a multi-day streak is the most effective
+              // reason to open the app. Show this as the very first element
+              // so users feel the cost before they read the rest.
+              if (streak > 0) ...[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFB923C).withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                        color: const Color(0xFFFB923C).withValues(alpha: 0.30)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Text('⚠️', style: TextStyle(fontSize: 13)),
+                      const Gap(7),
+                      Expanded(
+                        child: Text(
+                          'Play today or lose your $streak-day streak!',
+                          style: GoogleFonts.inter(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: const Color(0xFFFB923C),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const Gap(14),
+              ],
+
               // Streak flame + count
               Row(
                 children: [
@@ -2704,6 +3074,20 @@ class _StickerAlbumCard extends ConsumerWidget {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Seconds remaining until local midnight (clamped 0–86400).
+int _secondsToMidnight() {
+  final now      = DateTime.now();
+  final midnight = DateTime(now.year, now.month, now.day + 1);
+  return midnight.difference(now).inSeconds.clamp(0, 86400);
+}
+
+/// Human-readable countdown label: "6h 42m" or "34m".
+String _countdownLabel(int secs) {
+  final h = secs ~/ 3600;
+  final m = (secs % 3600) ~/ 60;
+  return h > 0 ? '${h}h ${m}m' : '${m}m';
+}
 
 String _fmt(int n) {
   if (n >= 100000) return '${(n / 100000).toStringAsFixed(1)}L';

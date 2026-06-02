@@ -24,6 +24,7 @@ import '../widgets/share_product_button.dart';
 // keeps badge + screen in sync without a manual refresh.
 import '../../../home/presentation/screens/shell_screen.dart' show cartItemCountProvider;
 import '../../../cart/presentation/screens/cart_screen.dart' show cartProvider;
+import '../../../search/presentation/screens/search_screen.dart' show SearchViewedStore;
 
 // ─── Palette ────────────────────��───────────────────────────────────���─────────
 // NOTE: _k* are resolved per-build via GColors.of(context) for theme support.
@@ -67,6 +68,7 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen>
   bool _descExpanded = false;
   bool _addingToCart = false;
   bool _cartSuccess = false;
+  bool _viewedRecorded = false; // ensures SearchViewedStore.record fires once
 
   /// If the currently selected attribute matches "Pack of N", returns N.
   /// Otherwise returns null (single-select mode).
@@ -125,6 +127,24 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen>
 
   Future<void> _addToCart(Map<String, dynamic> p) async {
     if (_addingToCart) return;
+
+    // ── Guest gate ────────────────────────────────────────────────────────
+    // Cart is an account-bound resource (saved per user on the backend).
+    // Guests would just get 401 from the API and see a raw "Unauthorized"
+    // toast. Better UX: prompt them to sign in inline, then let them
+    // resume the action after auth.
+    final isLoggedIn =
+        ref.read(authTokenNotifierProvider).valueOrNull != null;
+    if (!isLoggedIn) {
+      HapticFeedback.selectionClick();
+      await _promptSignInToContinue(
+        title: 'Sign in to add to cart',
+        message: 'Your cart is saved to your account so it follows you '
+            'across devices. Sign in to continue.',
+      );
+      return;
+    }
+
     HapticFeedback.mediumImpact();
     AudioService.instance.tap();
 
@@ -203,6 +223,124 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen>
     );
   }
 
+  // ── Guest-mode sign-in prompt ────────────────────────────────────────────
+  // Renders a confirmation card via OverlayEntry (NOT showDialog —
+  // showDialog's Navigator route transition triggers a Samsung One UI
+  // black-screen bug; OverlayEntry sits above the Navigator and avoids it).
+  Future<void> _promptSignInToContinue({
+    required String title,
+    required String message,
+  }) async {
+    final c = GColors.of(context);
+    final overlay = Overlay.of(context, rootOverlay: true);
+    bool? userChoice;
+    late OverlayEntry entry;
+    entry = OverlayEntry(
+      builder: (_) => Material(
+        type: MaterialType.transparency,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: GestureDetector(
+                onTap: () { userChoice = false; entry.remove(); },
+                child: ColoredBox(color: Colors.black.withValues(alpha: 0.55)),
+              ),
+            ),
+            Center(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 28),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: c.bg1,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  padding: const EdgeInsets.fromLTRB(22, 22, 22, 14),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Row(
+                        children: [
+                          Container(
+                            width: 36, height: 36,
+                            decoration: BoxDecoration(
+                              color: GColors.brand.withValues(alpha: 0.12),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            alignment: Alignment.center,
+                            child: const Icon(Icons.lock_outline_rounded,
+                                color: GColors.brand, size: 18),
+                          ),
+                          const Gap(12),
+                          Expanded(
+                            child: Text(
+                              title,
+                              style: GoogleFonts.inter(
+                                fontSize: 16, fontWeight: FontWeight.w800,
+                                color: c.text0, height: 1.25,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const Gap(12),
+                      Text(
+                        message,
+                        style: GoogleFonts.inter(
+                          fontSize: 13, color: c.text1, height: 1.45,
+                        ),
+                      ),
+                      const Gap(16),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          TextButton(
+                            onPressed: () {
+                              userChoice = false;
+                              entry.remove();
+                            },
+                            child: Text(
+                              'Not now',
+                              style: GoogleFonts.inter(
+                                color: c.text1, fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          ),
+                          const Gap(4),
+                          TextButton(
+                            onPressed: () {
+                              userChoice = true;
+                              entry.remove();
+                            },
+                            child: Text(
+                              'Sign in',
+                              style: GoogleFonts.inter(
+                                color: GColors.brand, fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+    overlay.insert(entry);
+    while (userChoice == null) {
+      await Future.delayed(const Duration(milliseconds: 30));
+    }
+    if (userChoice == true && mounted && context.mounted) {
+      // Clear guest mode so /auth doesn't bounce back to /.
+      await ref.read(guestModeNotifierProvider.notifier).setEnabled(false);
+      if (context.mounted) GoRouter.of(context).go('/auth');
+    }
+  }
+
   // ── Build ──────────────────────────────────────────────────────────────────
 
   @override
@@ -215,6 +353,18 @@ class _ProductDetailScreenState extends ConsumerState<ProductDetailScreen>
     final _kText1  = _c.text1;
     final _kText2  = _c.text2;
     final async = ref.watch(_productDetailProvider(widget.slug));
+
+    // Record this product in the "recently viewed" store the first time data
+    // lands — so the search screen's "Recently Viewed" strip stays fresh even
+    // when the user browses from home/shop (not just from search results).
+    ref.listen(_productDetailProvider(widget.slug), (_, next) {
+      next.whenData((p) {
+        if (!_viewedRecorded) {
+          _viewedRecorded = true;
+          SearchViewedStore.record(p);
+        }
+      });
+    });
 
     return Scaffold(
       backgroundColor: _kBg,
@@ -458,18 +608,16 @@ class _DetailView extends StatelessWidget {
 
                           const Gap(12),
 
-                          // ── Product badges (NEW / TRENDING / BEST SELLER / LOW STOCK) ──
-                          ProductBadgeRow(product: product, maxBadges: 3)
-                              .animate()
-                              .fadeIn(duration: 400.ms, delay: 100.ms),
-
-                          const Gap(10),
-
-                          // ── Live social proof row ─────────────────────────────
-                          Wrap(spacing: 8, runSpacing: 8, children: [
-                            PeopleViewingNow(productId: productId),
-                            RecentBuyerTicker(productId: productId),
-                          ]).animate().fadeIn(duration: 400.ms, delay: 200.ms),
+                          // ── Badges + social proof — single inline row ─────────
+                          Row(
+                            children: [
+                              Flexible(
+                                child: ProductBadgeRow(product: product, maxBadges: 2),
+                              ),
+                              const Gap(8),
+                              PeopleViewingNow(productId: productId),
+                            ],
+                          ).animate().fadeIn(duration: 400.ms, delay: 100.ms),
 
                           const Gap(16),
 
@@ -479,19 +627,26 @@ class _DetailView extends StatelessWidget {
                               Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(
-                                    '₹${price.toInt()}',
-                                    style: GoogleFonts.inter(
-                                      fontSize: 26,
-                                      fontWeight: FontWeight.w900,
-                                      color: _kGold,
-                                      height: 1,
-                                    ),
-                                  ),
-                                  Text(
-                                    'incl. all taxes',
-                                    style: GoogleFonts.inter(
-                                        fontSize: 10, color: _kText2),
+                                  Row(
+                                    crossAxisAlignment: CrossAxisAlignment.baseline,
+                                    textBaseline: TextBaseline.alphabetic,
+                                    children: [
+                                      Text(
+                                        '₹${price.toInt()}',
+                                        style: GoogleFonts.inter(
+                                          fontSize: 26,
+                                          fontWeight: FontWeight.w900,
+                                          color: _kGold,
+                                          height: 1,
+                                        ),
+                                      ),
+                                      const Gap(6),
+                                      Text(
+                                        '· incl. all taxes',
+                                        style: GoogleFonts.inter(
+                                            fontSize: 11, color: _kText2),
+                                      ),
+                                    ],
                                   ),
                                 ],
                               ),
@@ -539,19 +694,9 @@ class _DetailView extends StatelessWidget {
                       ),
                     ),
 
-                    // ── Divider ──────────────────────────────────────────────
-                    Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
-                      child: Container(height: 1, color: _kBorder),
-                    ),
+                    const Gap(20),
 
-                    // ── Pincode delivery check ────────────────────────────────
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
-                      child: PincodeDeliveryCheck(productId: productId),
-                    ),
-
-                    // ── Variant groups ────────────────────────────────────────
+                    // ── Variant groups ── FIRST: pick your design before delivery ──
                     if (variantGroups.isNotEmpty) ...[
                       Builder(builder: (ctx) {
                         final meta = (product['metadata'] as Map?) ?? {};
@@ -649,9 +794,21 @@ class _DetailView extends StatelessWidget {
 
                     // ── Quantity selector ─────────────────────────────────────
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
                       child: _QuantitySelector(qty: qty, onChanged: onQtyChanged,
                           maxQty: inventory > 0 ? inventory : 99),
+                    ),
+
+                    // ── Divider ───────────────────────────────────────────────
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 2),
+                      child: Container(height: 1, color: _kBorder),
+                    ),
+
+                    // ── Pincode delivery check ────────────────────────────────
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+                      child: PincodeDeliveryCheck(productId: productId),
                     ),
 
                     // ── Description ───────────────────────────────────────────
@@ -675,6 +832,23 @@ class _DetailView extends StatelessWidget {
                       ),
                       const Gap(16),
                     ],
+
+                    // ── FAQ (auto-generated by AI SEO — People Also Ask) ──────
+                    Builder(builder: (ctx) {
+                      final metaMap = (product['metadata'] as Map?) ?? {};
+                      final seoMeta = (metaMap['seo']      as Map?) ?? {};
+                      final faqRaw  = seoMeta['faq'];
+                      final faqItems = faqRaw is List
+                          ? List<Map<String, dynamic>>.from(
+                              faqRaw.whereType<Map>().map((e) =>
+                                  Map<String, dynamic>.from(e as Map)))
+                          : <Map<String, dynamic>>[];
+                      if (faqItems.isEmpty) return const SizedBox.shrink();
+                      return Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+                        child: _FaqSection(faqs: faqItems),
+                      );
+                    }),
 
                     // ── Tags ──────────────────────────────────────────────────
                     if (tags.isNotEmpty) ...[
@@ -854,35 +1028,14 @@ class _ImageGallery extends StatelessWidget {
             ),
           ),
 
-          // Top-right actions: Share button + Customizable badge below it
+          // Top-right: Share button only — Customizable shown in badge row below title
           Positioned(
             top: MediaQuery.of(context).padding.top + 12,
             right: 16,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                ShareProductButton(
-                  productSlug: productSlug,
-                  productTitle: productTitle,
-                  productPrice: productPrice,
-                ),
-                if (isCustom) ...[
-                  const SizedBox(height: 10),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                    decoration: BoxDecoration(
-                      color: GColors.emerald.withValues(alpha: 0.9),
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: Text(
-                      '✏️ Customizable',
-                      style: GoogleFonts.inter(
-                        fontSize: 10, fontWeight: FontWeight.w700, color: Colors.white,
-                      ),
-                    ),
-                  ),
-                ],
-              ],
+            child: ShareProductButton(
+              productSlug: productSlug,
+              productTitle: productTitle,
+              productPrice: productPrice,
             ),
           ),
 
@@ -1210,35 +1363,43 @@ class _VariantGroup extends StatelessWidget {
             ]),
             const Gap(12),
             Expanded(
-              child: GridView.builder(
-                controller: scroll,
-                // 0.85 aspect-ratio gives roughly: square 1:1 image area
-                // + a tight info strip below. The previous 0.68 left a
-                // big empty band under "In stock" because the image is
-                // fixed at 110px height while the card stretched to
-                // ~205px tall. Square image (#38) + matching aspect.
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2,
-                  crossAxisSpacing: 10,
-                  mainAxisSpacing: 10,
-                  childAspectRatio: 0.78,
-                ),
-                itemCount: options.length,
-                itemBuilder: (_, i) => _VariantCard(
-                  option: options[i],
-                  selected: selected == options[i]['value'].toString(),
-                  basePrice: basePrice,
-                  compareAtPrice: compareAtPrice,
-                  fallbackImage: fallbackImage,
-                  onTap: () {
-                    final inStock = options[i]['inStock'] as bool? ?? true;
-                    if (inStock) {
-                      onSelect(options[i]['value'].toString());
-                      Navigator.pop(sheetCtx);
-                    }
-                  },
-                ),
-              ),
+              child: LayoutBuilder(builder: (ctx, constraints) {
+                // mainAxisExtent gives a predictable cell height that
+                // always fits the square image + name + price + optional
+                // strikethrough M.R.P + optional "Out of stock" line.
+                // 0.78 aspect-ratio left a 14px deficit on most phones —
+                // calculating the height explicitly avoids that.
+                const double crossSpacing = 10;
+                final double cellW =
+                    (constraints.maxWidth - crossSpacing) / 2;
+                // image(cellW) + 8 padTop + 16 name + 4 gap +
+                // 18 price + 14 mrp + 4 stock + 10 padBot ≈ cellW + 74
+                final double cellH = cellW + 78;
+                return GridView.builder(
+                  controller: scroll,
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    crossAxisCount:   2,
+                    crossAxisSpacing: crossSpacing,
+                    mainAxisSpacing:  10,
+                    mainAxisExtent:   cellH,
+                  ),
+                  itemCount: options.length,
+                  itemBuilder: (_, i) => _VariantCard(
+                    option: options[i],
+                    selected: selected == options[i]['value'].toString(),
+                    basePrice: basePrice,
+                    compareAtPrice: compareAtPrice,
+                    fallbackImage: fallbackImage,
+                    onTap: () {
+                      final inStock = options[i]['inStock'] as bool? ?? true;
+                      if (inStock) {
+                        onSelect(options[i]['value'].toString());
+                        Navigator.pop(sheetCtx);
+                      }
+                    },
+                  ),
+                );
+              }),
             ),
           ]),
         ),
@@ -1331,7 +1492,9 @@ class _VariantCard extends StatelessWidget {
 
     return GestureDetector(
       onTap: inStock ? onTap : null,
-      child: AnimatedContainer(
+      child: Opacity(
+        opacity: inStock ? 1.0 : 0.45,
+        child: AnimatedContainer(
         duration: 180.ms,
         width: 140,
         decoration: BoxDecoration(
@@ -1424,14 +1587,13 @@ class _VariantCard extends StatelessWidget {
                           style: GoogleFonts.inter(
                             fontSize: 11, color: const Color(0xFF888888),
                             decoration: TextDecoration.lineThrough)),
-                      const Gap(2),
-                      // Stock
-                      Text(inStock ? 'In stock' : 'Out of stock',
-                        style: GoogleFonts.inter(
-                          fontSize: 10, fontWeight: FontWeight.w600,
-                          color: inStock
-                              ? const Color(0xFF0F766E)
-                              : const Color(0xFFDC2626))),
+                      if (!inStock) ...[
+                        const Gap(2),
+                        Text('Out of stock',
+                          style: GoogleFonts.inter(
+                            fontSize: 10, fontWeight: FontWeight.w600,
+                            color: const Color(0xFFDC2626))),
+                      ],
                     ],
                   ),
                 ),
@@ -1455,6 +1617,7 @@ class _VariantCard extends StatelessWidget {
                 ),
               ),
           ],
+        ),
         ),
       ),
     );
@@ -1585,27 +1748,42 @@ class _QuantitySelector extends StatelessWidget {
   }
 }
 
-class _QtyBtn extends StatelessWidget {
+class _QtyBtn extends StatefulWidget {
   final IconData icon;
   final VoidCallback? onTap;
   const _QtyBtn({required this.icon, this.onTap});
 
   @override
+  State<_QtyBtn> createState() => _QtyBtnState();
+}
+
+class _QtyBtnState extends State<_QtyBtn> {
+  bool _pressing = false;
+
+  @override
   Widget build(BuildContext context) {
-    final _c       = GColors.of(context);
-    final _kText0  = _c.text0;
-    final _kText2  = _c.text2;
+    final _c      = GColors.of(context);
+    final enabled = widget.onTap != null;
     return GestureDetector(
+      onTapDown:   enabled ? (_) => setState(() => _pressing = true)  : null,
+      onTapUp:     (_) => setState(() => _pressing = false),
+      onTapCancel: ()  => setState(() => _pressing = false),
       onTap: () {
-        if (onTap != null) {
+        if (widget.onTap != null) {
           HapticFeedback.selectionClick();
-          onTap!();
+          widget.onTap!();
         }
       },
-      child: Container(
-        width: 42, height: 42,
-        decoration: BoxDecoration(borderRadius: BorderRadius.circular(12)),
-        child: Icon(icon, size: 18, color: onTap != null ? _kText0 : _kText2),
+      child: AnimatedScale(
+        scale:    _pressing && enabled ? 0.82 : 1.0,
+        duration: const Duration(milliseconds: 100),
+        curve:    Curves.easeOut,
+        child: Container(
+          width: 38, height: 38,
+          decoration: BoxDecoration(borderRadius: BorderRadius.circular(10)),
+          child: Icon(widget.icon, size: 18,
+              color: enabled ? _c.text0 : _c.text2),
+        ),
       ),
     );
   }
@@ -1769,14 +1947,17 @@ class _TrustRow extends StatelessWidget {
     final _kSurface = _c.bg1;
     final _kBorder  = _c.border;
     final _kText2   = _c.text2;
-    const items = [
-      ('🚚', 'Fast\nDelivery'),
-      ('🔄', 'Easy\nReturns'),
-      ('✅', 'Verified\nQuality'),
-      ('🎁', 'Gift\nWrapping'),
+    const items = <(IconData, String)>[
+      (Icons.local_shipping_outlined,  'Fast Delivery'),
+      (Icons.replay_outlined,          'Easy Returns'),
+      (Icons.verified_outlined,        'Verified Quality'),
+      (Icons.card_giftcard_outlined,   'Gift Wrapping'),
     ];
+    // Each trust item: icon stacked above label (vertical layout).
+    // Before: horizontal icon+text at 13px/9px crammed in a row → receipt footer feel.
+    // After:  icon 18px centred, label 10px below → distinct quality signals.
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 16),
+      padding: const EdgeInsets.symmetric(vertical: 14),
       decoration: BoxDecoration(
         color: _kSurface,
         borderRadius: BorderRadius.circular(12),
@@ -1784,16 +1965,30 @@ class _TrustRow extends StatelessWidget {
       ),
       child: Row(
         children: items.map((item) => Expanded(
-          child: Column(
-            children: [
-              Text(item.$1, style: const TextStyle(fontSize: 22)),
-              const Gap(4),
-              Text(
-                item.$2,
-                textAlign: TextAlign.center,
-                style: GoogleFonts.inter(fontSize: 9, color: _kText2, height: 1.4),
-              ),
-            ],
+          child: Container(
+            decoration: item != items.last
+                ? BoxDecoration(
+                    border: Border(
+                        right: BorderSide(color: _kBorder, width: 0.5)))
+                : null,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(item.$1, size: 18, color: _kText2),
+                const Gap(5),
+                Text(
+                  item.$2,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.center,
+                  style: GoogleFonts.inter(
+                      fontSize: 10,
+                      color: _kText2,
+                      fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
           ),
         )).toList(),
       ),
@@ -1803,7 +1998,7 @@ class _TrustRow extends StatelessWidget {
 
 // ─── Sticky bottom CTA ────────────────────────────────────────────────────────
 
-class _StickyBottomBar extends StatelessWidget {
+class _StickyBottomBar extends StatefulWidget {
   final double price;
   final int qty;
   final bool isCustom, addingToCart, cartSuccess;
@@ -1821,16 +2016,26 @@ class _StickyBottomBar extends StatelessWidget {
   });
 
   @override
+  State<_StickyBottomBar> createState() => _StickyBottomBarState();
+}
+
+class _StickyBottomBarState extends State<_StickyBottomBar> {
+  bool _pressingCart     = false;
+  bool _pressingCustomize = false;
+
+  @override
   Widget build(BuildContext context) {
     final _c       = GColors.of(context);
     final _kBg     = _c.bg0;
     final _kBorder = _c.border;
     final _kText2  = _c.text2;
-    final total = (price * qty).toInt();
+    final total = (widget.price * widget.qty).toInt();
+
     return Container(
       // Shell uses bottomNavigationBar → scaffold body already ends above nav bar.
       // Only need safe-area + small inner gap.
-      padding: EdgeInsets.fromLTRB(16, 10, 16, MediaQuery.of(context).padding.bottom + 10),
+      padding: EdgeInsets.fromLTRB(
+          16, 10, 16, MediaQuery.of(context).padding.bottom + 10),
       decoration: BoxDecoration(
         color: _kBg.withValues(alpha: 0.97),
         border: Border(top: BorderSide(color: _kBorder)),
@@ -1843,69 +2048,122 @@ class _StickyBottomBar extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text('Total', style: GoogleFonts.inter(fontSize: 10, color: _kText2)),
-              Text('₹$total', style: GoogleFonts.inter(
-                fontSize: 20, fontWeight: FontWeight.w900, color: _c.text0,
-              )),
+              Text('Total',
+                  style: GoogleFonts.inter(fontSize: 10, color: _kText2)),
+              Text('₹$total',
+                  style: GoogleFonts.inter(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w900,
+                    color: _c.text0,
+                  )),
             ],
           ),
           const Gap(12),
-          // For customizable products, Customise button takes ALL remaining
-          // space (no Add to Cart — the user must personalise first).
-          // For non-customizable products, only Add to Cart shows.
-          if (isCustom) ...[
+
+          // For customizable products: Customise button only.
+          // For non-customizable products: Add to Cart only.
+          if (widget.isCustom) ...[
             Expanded(
               child: GestureDetector(
-                onTap: onCustomize,
-                child: Container(
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: GColors.brand, // primary call-to-action colour
-                    borderRadius: BorderRadius.circular(12),
+                onTapDown:   (_) => setState(() => _pressingCustomize = true),
+                onTapUp:     (_) => setState(() => _pressingCustomize = false),
+                onTapCancel: ()  => setState(() => _pressingCustomize = false),
+                onTap: widget.onCustomize,
+                child: AnimatedScale(
+                  scale:    _pressingCustomize ? 0.97 : 1.0,
+                  duration: const Duration(milliseconds: 120),
+                  curve:    Curves.easeOut,
+                  child: Container(
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: GColors.brand,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.auto_awesome_rounded,
+                              size: 16, color: Colors.white),
+                          const Gap(6),
+                          Text('Customise & Add',
+                              style: GoogleFonts.inter(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w800,
+                                color: Colors.white,
+                              )),
+                        ]),
                   ),
-                  child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                    const Icon(Icons.auto_awesome_rounded, size: 16, color: Colors.white),
-                    const Gap(6),
-                    Text('Customise & Add', style: GoogleFonts.inter(
-                      fontSize: 13, fontWeight: FontWeight.w800, color: Colors.white,
-                    )),
-                  ]),
                 ),
               ),
             ),
           ] else ...[
             Expanded(
               child: GestureDetector(
-                onTap: addingToCart ? null : onAddToCart,
-                child: AnimatedContainer(
-                  duration: 250.ms,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: cartSuccess ? GColors.emerald : GColors.brand,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Center(
-                    child: addingToCart
-                        ? const SizedBox(
-                            width: 20, height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2.5, color: Colors.white),
-                          )
-                        : cartSuccess
-                            ? Row(mainAxisSize: MainAxisSize.min, children: [
-                                Lottie.asset('assets/animations/checkmark.json',
-                                  width: 24, height: 24,
-                                  controller: cartCtrl,
-                                  onLoaded: (c) => cartCtrl.duration = c.duration),
-                                const Gap(5),
-                                Text('Added!', style: GoogleFonts.inter(
-                                  fontSize: 13, fontWeight: FontWeight.w800, color: Colors.white)),
-                              ])
-                            : Row(mainAxisSize: MainAxisSize.min, children: [
-                                const Icon(Icons.shopping_bag_outlined, size: 16, color: Colors.white),
-                                const Gap(6),
-                                Text('Add to Cart', style: GoogleFonts.inter(
-                                  fontSize: 13, fontWeight: FontWeight.w800, color: Colors.white)),
-                              ]),
+                onTapDown: (!widget.addingToCart && !widget.cartSuccess)
+                    ? (_) => setState(() => _pressingCart = true)
+                    : null,
+                onTapUp:     (_) => setState(() => _pressingCart = false),
+                onTapCancel: ()  => setState(() => _pressingCart = false),
+                onTap: widget.addingToCart ? null : widget.onAddToCart,
+                child: AnimatedScale(
+                  scale: (_pressingCart &&
+                          !widget.addingToCart &&
+                          !widget.cartSuccess)
+                      ? 0.97
+                      : 1.0,
+                  duration: const Duration(milliseconds: 120),
+                  curve:    Curves.easeOut,
+                  child: AnimatedContainer(
+                    duration: 250.ms,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: widget.cartSuccess
+                          ? GColors.emerald
+                          : GColors.brand,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Center(
+                      child: widget.addingToCart
+                          ? const SizedBox(
+                              width: 20, height: 20,
+                              child: CircularProgressIndicator(
+                                  strokeWidth: 2.5, color: Colors.white),
+                            )
+                          : widget.cartSuccess
+                              ? Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Lottie.asset(
+                                      'assets/animations/checkmark.json',
+                                      width: 24, height: 24,
+                                      controller: widget.cartCtrl,
+                                      onLoaded: (c) =>
+                                          widget.cartCtrl.duration = c.duration,
+                                    ),
+                                    const Gap(5),
+                                    Text('Added!',
+                                        style: GoogleFonts.inter(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w800,
+                                          color: Colors.white,
+                                        )),
+                                  ])
+                              : Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    const Icon(
+                                        Icons.shopping_bag_outlined,
+                                        size: 16,
+                                        color: Colors.white),
+                                    const Gap(6),
+                                    Text('Add to Cart',
+                                        style: GoogleFonts.inter(
+                                          fontSize: 13,
+                                          fontWeight: FontWeight.w800,
+                                          color: Colors.white,
+                                        )),
+                                  ]),
+                    ),
                   ),
                 ),
               ),
@@ -1997,6 +2255,156 @@ class _ErrorView extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+// ─── FAQ Section ─────────────────────────────────────────────────────────────
+//
+// Renders the AI-generated FAQ items stored in product.metadata.seo.faq.
+// Each item is an accordion tile — users tap to reveal the answer.
+// This matches the FAQPage schema injected into the web product pages and
+// drives Google's "People Also Ask" rich-snippet eligibility.
+
+class _FaqSection extends StatefulWidget {
+  final List<Map<String, dynamic>> faqs;
+  const _FaqSection({required this.faqs});
+
+  @override
+  State<_FaqSection> createState() => _FaqSectionState();
+}
+
+class _FaqSectionState extends State<_FaqSection> {
+  final Set<int> _open = {};
+
+  @override
+  Widget build(BuildContext context) {
+    final c = GColors.of(context);
+
+    // Pre-filter to only items with both a question and an answer.
+    final valid = widget.faqs
+        .map((e) => (
+              q: (e['q'] ?? e['question'] ?? '').toString(),
+              a: (e['a'] ?? e['answer']   ?? '').toString(),
+            ))
+        .where((e) => e.q.isNotEmpty && e.a.isNotEmpty)
+        .toList();
+
+    if (valid.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Section header
+        Row(
+          children: [
+            const Text('❓', style: TextStyle(fontSize: 16)),
+            const Gap(8),
+            Text(
+              'Frequently Asked Questions',
+              style: GoogleFonts.inter(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: c.text0,
+              ),
+            ),
+          ],
+        ),
+        const Gap(10),
+
+        // All FAQ items unified in one container — hairline dividers between.
+        // Before: one heavy rounded card per item (visual weight × N).
+        // After:  one shared surface, items separated by 1px hairlines.
+        Container(
+          decoration: BoxDecoration(
+            color: c.bg1,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: c.border),
+          ),
+          child: Column(
+            children: valid.asMap().entries.map((entry) {
+              final i      = entry.key;
+              final item   = entry.value;
+              final isOpen = _open.contains(i);
+
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Hairline divider between items (not before the first one)
+                  if (i > 0)
+                    Divider(height: 1, thickness: 1, color: c.border),
+
+                  GestureDetector(
+                    onTap: () {
+                      HapticFeedback.selectionClick();
+                      setState(() {
+                        if (isOpen) _open.remove(i); else _open.add(i);
+                      });
+                    },
+                    behavior: HitTestBehavior.opaque,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Question + chevron
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  item.q,
+                                  style: GoogleFonts.inter(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: isOpen ? GColors.brand : c.text0,
+                                    height: 1.35,
+                                  ),
+                                ),
+                              ),
+                              const Gap(8),
+                              AnimatedRotation(
+                                turns: isOpen ? 0.5 : 0,
+                                duration: const Duration(milliseconds: 200),
+                                curve: Curves.easeOut,
+                                child: Icon(
+                                  Icons.keyboard_arrow_down_rounded,
+                                  size: 20,
+                                  color: isOpen ? GColors.brand : c.text2,
+                                ),
+                              ),
+                            ],
+                          ),
+
+                          // Answer (animated expand — same logic, tighter padding)
+                          AnimatedCrossFade(
+                            firstChild: const SizedBox.shrink(),
+                            secondChild: Padding(
+                              padding: const EdgeInsets.only(top: 8),
+                              child: Text(
+                                item.a,
+                                style: GoogleFonts.inter(
+                                  fontSize: 12.5,
+                                  color: c.text1,
+                                  height: 1.55,
+                                ),
+                              ),
+                            ),
+                            crossFadeState: isOpen
+                                ? CrossFadeState.showSecond
+                                : CrossFadeState.showFirst,
+                            duration: const Duration(milliseconds: 200),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            }).toList(),
+          ),
+        ),
+      ],
     );
   }
 }

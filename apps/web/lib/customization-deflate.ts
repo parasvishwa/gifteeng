@@ -81,7 +81,26 @@ async function uploadOne(dataUrl: string): Promise<string> {
   const form = new FormData();
   form.append("file", file);
   form.append("ownerType", "customization");
-  const res = await fetch(UPLOAD_PATH, { method: "POST", body: form });
+
+  // Attach auth so /api/files/upload accepts the call. Session79 locked
+  // that endpoint after the audit (was previously open to the world,
+  // disk-fill / anon-hosting risk). The customizer flow needs uploads
+  // to work for both:
+  //   - Logged-in customers → bearer JWT (Authorization)
+  //   - Guests doing first-time checkout → X-Cart-Session (a UUID
+  //     scoped to their cart, also enforced by the upload guard so
+  //     orphaned guest uploads can be cleaned up by ownerType tag)
+  // We send whichever is available without going through lib/api.ts to
+  // avoid a circular import (cart store → deflate → api → cart).
+  const headers: Record<string, string> = {};
+  if (typeof window !== "undefined") {
+    const token = window.localStorage.getItem("gifteeng.b2c.token");
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const sessionKey = window.localStorage.getItem("gifteeng.cart.session");
+    if (sessionKey) headers["X-Cart-Session"] = sessionKey;
+  }
+
+  const res = await fetch(UPLOAD_PATH, { method: "POST", body: form, headers });
   if (!res.ok) throw new Error(`upload ${res.status}`);
   const data = await res.json() as { url?: string };
   if (!data.url) throw new Error("missing url in upload response");

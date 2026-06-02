@@ -28,6 +28,8 @@ import { json, urlencoded, static as expressStatic } from "express";
 
 const ALLOWED_ORIGINS = [
   // production domains
+  "https://www.gifteeng.com",
+  "https://gifteeng.com",
   "https://new.gifteeng.com",
   "https://new-business.gifteeng.com",
   "https://admin.gifteeng.com",
@@ -123,9 +125,36 @@ async function bootstrap() {
     fallthrough: false,
   }));
 
-  // Increase body size limit to handle canvas designs with embedded base64 images
-  app.use(json({ limit: "200mb" }));
-  app.use(urlencoded({ limit: "200mb", extended: true }));
+  // Body-parser limits.
+  //
+  // Default for the whole API is 1 MB — plenty for typical JSON payloads
+  // (login, cart, etc.) and small enough that a single attacker can't pin
+  // a worker on JSON parsing alone. Only specific routes that legitimately
+  // need large bodies (canvas customizer payloads with embedded base64
+  // images, bulk import endpoints, file-upload metadata blobs) get a
+  // larger ceiling. See docs/SECURITY_AUDIT.md M-2.
+  const LARGE_BODY_ROUTES = [
+    "/api/orders",                  // canvas designs at checkout
+    "/api/cart",                    // cart items can carry base64 customizer designs
+    "/api/checkout",                // same — designs travel with the order
+    "/api/admin/products",          // bulk product import / mockup template payloads
+    "/api/admin/homepage-config",   // homepage-builder save: many block configs
+    "/api/admin/settings",          // marketing pixels, theme JSON, navigation tree
+    "/api/admin/external-reviews",  // bulk import from the Chrome extension
+    "/api/files",                   // file metadata + small body uploads
+    "/api/imports",                 // CSV/JSON import jobs
+    "/api/shopify-migrate",         // Shopify CSV imports
+    "/api/design-templates",        // customizer template payloads
+  ];
+  const BIG = "50mb";
+  const SMALL = "1mb";
+
+  app.use(json({ limit: SMALL }));
+  app.use(urlencoded({ limit: SMALL, extended: true }));
+  for (const route of LARGE_BODY_ROUTES) {
+    app.use(route, json({ limit: BIG }));
+    app.use(route, urlencoded({ limit: BIG, extended: true }));
+  }
 
   // Sentry HTTP error handler — registered AFTER routes (Nest's @nestjs/core
   // sets up routing during NestFactory.create). When SENTRY_DSN isn't set,

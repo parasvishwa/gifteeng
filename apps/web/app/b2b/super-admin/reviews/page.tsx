@@ -278,7 +278,8 @@ export default function AdminReviews() {
     setLoadingPhotos(false);
   };
   const refreshProducts = async () => {
-    const data = await safeGet<{ items?: any[] } | any[]>("/products?pageSize=200", []);
+    // Admin endpoint — drafts + b2c-disabled rows included.
+    const data = await safeGet<{ items?: any[] } | any[]>("/products/admin/list?pageSize=200&page=1", []);
     const items: any[] = Array.isArray(data) ? data : ((data as any)?.items ?? []);
     setProducts(items.map((p: any) => ({
       id: p.id ?? "",

@@ -48,9 +48,21 @@ export default function SuperAdminCatalogEditorPage() {
         setProductIds((c.products ?? []).map((p) => p.id));
       })
       .catch(() => setError("Failed to load catalog"));
+    // Use the admin list endpoint so drafts / b2c-disabled rows are still
+    // available in the catalog picker. The public /products endpoint filters
+    // them out and would leave this picker permanently empty for any store
+    // whose catalog is still in draft.
     apiB2b()
-      .get<{ data?: Product[] } | Product[]>("/api/products?pageSize=200")
-      .then((res) => setAllProducts(Array.isArray(res) ? res : (res.data ?? [])))
+      .get<{ items?: Product[]; data?: Product[] } | Product[]>(
+        "/api/products/admin/list?pageSize=200&page=1",
+      )
+      .then((res) =>
+        setAllProducts(
+          Array.isArray(res)
+            ? res
+            : (res.items ?? res.data ?? []),
+        ),
+      )
       .catch(() => {});
   }, [slug]);
 

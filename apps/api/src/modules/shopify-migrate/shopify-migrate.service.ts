@@ -147,23 +147,32 @@ export class ShopifyMigrateService {
   private async ensurePlaceholderProduct(): Promise<string> {
     if (this.placeholderProductId) return this.placeholderProductId;
     const slug = "shopify-migrated-line-item";
-    let row = await this.prisma.product.findUnique({ where: { slug } });
-    if (!row) {
-      row = await this.prisma.product.create({
-        data: {
-          slug,
-          title: "Shopify migrated line item (placeholder)",
-          description:
-            "Auto-created so historical Shopify orders can satisfy the OrderItem.productId FK. The line snapshot carries the real product info.",
-          basePrice: new Prisma.Decimal(0),
-          inventory: 0,
-          isCustomizable: false,
-          b2cEnabled: false,                    // hidden from the storefront
-          b2bEnabled: false,
-          metadata: { shopify_placeholder: true } as Prisma.InputJsonValue,
-        },
-      });
-    }
+    // Upsert so any row created by an older service version (which didn't
+    // stamp `metadata.shopify_placeholder = true`) gets the flag backfilled.
+    // The admin list filter hides on that flag, so without this backfill
+    // the placeholder kept "coming back" on the admin product grid even
+    // after the operator soft-deleted it.
+    const row = await this.prisma.product.upsert({
+      where: { slug },
+      update: {
+        // Don't touch enabled flags / pricing here — operator may have
+        // tombstoned the row and we want to preserve that. Just stamp the
+        // identification flag so filters work.
+        metadata: { shopify_placeholder: true } as Prisma.InputJsonValue,
+      },
+      create: {
+        slug,
+        title: "Shopify migrated line item (placeholder)",
+        description:
+          "Auto-created so historical Shopify orders can satisfy the OrderItem.productId FK. The line snapshot carries the real product info.",
+        basePrice: new Prisma.Decimal(0),
+        inventory: 0,
+        isCustomizable: false,
+        b2cEnabled: false,                    // hidden from the storefront
+        b2bEnabled: false,
+        metadata: { shopify_placeholder: true } as Prisma.InputJsonValue,
+      },
+    });
     this.placeholderProductId = row.id;
     return row.id;
   }

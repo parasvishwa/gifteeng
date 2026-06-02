@@ -5,9 +5,60 @@ import type { ProductListQuery } from "@gifteeng/shared";
 import { SpApiService } from "../amazon-sp/sp-api.service";
 import { RealtimeService } from "../realtime/realtime.service";
 import { CacheService } from "../cache/cache.service";
+import { SeoEnrichmentService } from "../seo/seo-enrichment.service";
+import { sanitizeHtml } from "../../common/sanitize-html";
 
 const CACHE_TTL_LIST = 60;     // seconds — catalog list pages
 const CACHE_PREFIX = "products:";
+
+// Brand prefix used for auto-generated image alt text. Kept as a constant
+// rather than reading from settings on every write — site brand changes
+// rarely and an env override (BRAND_NAME) is enough for white-label deploys.
+const BRAND_NAME = (process.env.BRAND_NAME ?? "Gifteeng").trim() || "Gifteeng";
+
+/**
+ * Auto-populate `alt` text on every image of a product that doesn't already
+ * have one. Format: "<brand> – <product title>"; if multiple images, appends
+ * a 1-based index so screen readers + Google can distinguish them. Accepts
+ * both shapes the storefront persists historically:
+ *   - string[]          → coerces each entry to `{ url, alt }`
+ *   - {url, alt?}[]     → fills in missing `alt`
+ *   - {url}[]           → adds `alt`
+ *
+ * Caller-supplied alts are NEVER overwritten — only blanks get filled.
+ * Without this, search engines + accessibility audits flag every product
+ * image as "image missing alt text" (the admin upload UI doesn't capture
+ * one). See ALT-text task in admin feedback.
+ */
+function autoFillAltText(
+  images: unknown,
+  productTitle: string,
+  brand?: string | null,
+): unknown {
+  const brandPrefix = (brand ?? BRAND_NAME).trim();
+  const title = (productTitle ?? "").trim();
+  if (!Array.isArray(images) || images.length === 0) return images;
+
+  const base = brandPrefix && title
+    ? `${brandPrefix} – ${title}`
+    : title || brandPrefix || "Product image";
+
+  const total = images.length;
+  return images.map((img, i) => {
+    const suffix = total > 1 ? ` (image ${i + 1})` : "";
+    if (typeof img === "string") {
+      return { url: img, alt: `${base}${suffix}` };
+    }
+    if (img && typeof img === "object") {
+      const o = img as { url?: string; src?: string; alt?: string; order?: number };
+      const existing = (o.alt ?? "").trim();
+      // Don't overwrite a meaningful caption admins typed themselves.
+      if (existing) return img;
+      return { ...o, alt: `${base}${suffix}` };
+    }
+    return img;
+  });
+}
 
 /**
  * Strip HTML tags and clip to ~200 chars for the card-view description
@@ -27,12 +78,44 @@ function trimDescriptionForCard(html: string | null): string | null {
   return (lastSpace > 100 ? cut.slice(0, lastSpace) : cut) + "…";
 }
 
+/**
+ * Drop base64-data-URL image entries from a product's `images` JSON. A few
+ * legacy admin saves pasted raw image data into the URL field, which inflates
+ * the list payload from ~150 KB to multi-MB and breaks Next.js's data cache.
+ * Real uploads always live under /uploads/... or a CDN host, never `data:`.
+ *
+ * Applied at the response boundary so the DB stays unchanged — admins can
+ * still see and clean up the offending row in the dashboard, but normal
+ * shoppers and the sitemap crawler never pay for it.
+ */
+function sanitizeImagesForList(images: unknown): unknown {
+  if (!Array.isArray(images)) return images;
+  const cleaned = images.filter((it) => {
+    if (!it || typeof it !== "object") return false;
+    const url = (it as { url?: unknown }).url;
+    if (typeof url !== "string") return false;
+    if (url.startsWith("data:")) return false;
+    return true;
+  });
+  return cleaned;
+}
+
+function computeDiscountPct(basePrice: number | string, mrp?: number | string | null): number | null {
+  if (!mrp) return null;
+  const b = Number(basePrice);
+  const m = Number(mrp);
+  if (m <= 0 || b >= m) return null;
+  return Math.round(((m - b) / m) * 100);
+}
+
 export type AdminProductCreateInput = {
   slug?: string;
   title: string;
   description?: string;
   category?: string;
+  brandName?: string;
   basePrice: number | string;
+  mrp?: number | string | null;
   currency?: string;
   sku?: string;
   inventory?: number;
@@ -43,6 +126,7 @@ export type AdminProductCreateInput = {
   b2bEnabled?: boolean;
   ownerCompanyId?: string | null;
   metadata?: unknown;
+  fbtProductIds?: string[];
 };
 
 export type AdminProductUpdateInput = Partial<AdminProductCreateInput>;
@@ -65,6 +149,7 @@ export class ProductsService {
     private spApi: SpApiService,
     private realtime: RealtimeService,
     private cache: CacheService,
+    private seo: SeoEnrichmentService,
   ) {}
 
   /**
@@ -158,6 +243,7 @@ export class ProductsService {
       page: q.page, pageSize: q.pageSize, sort: q.sort,
       category: q.category ?? "", search: q.search ?? "",
       collection: q.collection ?? "", tag: q.tag ?? "",
+      deals: (q as any).deals ?? false,
     })}`;
     return this.cache.getOrSet(cacheKey, CACHE_TTL_LIST, () => this.listB2cUncached(q));
   }
@@ -184,9 +270,25 @@ export class ProductsService {
     // `tag` — matches against `metadata.tags` (string[]) stored as JSONB.
     // Tags use the convention "<namespace>:<value>" (e.g. "occasion:birthday")
     // so multiple intent families can coexist in the same array.
+    // Category match is case-insensitive AND tolerant of mismatched separators
+    // ("Personalised Gift" vs "personalised-gift" vs "Personalised gift").
+    // Admins frequently type the category at product-create time slightly
+    // differently than what's stored on the Category row — without this guard
+    // freshly-added products silently fail to appear on the category page.
     const where: Prisma.ProductWhereInput = {
       b2cEnabled: true,
-      ...(q.category ? { category: q.category } : {}),
+      ...((q as any).deals
+        ? { discountPct: { gte: 60 }, mrp: { not: null }, b2cEnabled: true }
+        : {}),
+      ...(q.category
+        ? {
+            category: {
+              // Postgres ILIKE-equivalent — case-insensitive exact match.
+              equals: q.category,
+              mode: "insensitive",
+            },
+          }
+        : {}),
       ...(q.collection
         ? { collectionLinks: { some: { collection: { slug: q.collection } } } }
         : {}),
@@ -240,21 +342,43 @@ export class ProductsService {
           description:    true,
           category:       true,
           basePrice:      true,
+          mrp:            true,
+          discountPct:    true,
           currency:       true,
           inventory:      true,
           isCustomizable: true,
-          images:         true,                      // {url, alt}[]
+          images:         true,
           b2cEnabled:     true,
           createdAt:      true,
           updatedAt:      true,
-          _count: { select: { variantOptions: true } },
+          _count: { select: { variantOptions: true, orderItems: true } },
         },
       }),
       this.prisma.product.count({ where }),
     ]);
+
+    // Batch-fetch approved ratings for the fetched product set in one query.
+    const ratings = items.length
+      ? await this.prisma.review.groupBy({
+          by: ["productId"],
+          where: { productId: { in: items.map((i) => i.id) }, isApproved: true },
+          _avg: { rating: true },
+          _count: { rating: true },
+        })
+      : [];
+    const ratingMap = new Map(
+      ratings.map((r) => [r.productId, {
+        avg: r._avg.rating ? Math.round(r._avg.rating * 10) / 10 : null,
+        count: r._count.rating,
+      }]),
+    );
+
     const trimmed = items.map((it) => ({
       ...it,
       description: trimDescriptionForCard(it.description),
+      images: sanitizeImagesForList(it.images),
+      ratingAvg: ratingMap.get(it.id)?.avg ?? null,
+      reviewCount: ratingMap.get(it.id)?.count ?? 0,
     }));
     return { items: trimmed, total, page: q.page, pageSize: q.pageSize };
   }
@@ -307,7 +431,15 @@ export class ProductsService {
 
     // Match query — runs with similarity_threshold=0.2 set on the DB.
     // We multiply title-similarity by 3 to bias toward name matches,
-    // sku by 2, and add description as a tie-breaker.
+    // sku & category by 2, and add description as a tie-breaker.
+    //
+    // Category match lets users find products by typing the category name
+    // (e.g. "kitchen" → all products tagged Kitchen). Tags inside
+    // metadata.tags JSON are also matched as text so collection-like labels
+    // surface in results (collections themselves are a separate table with
+    // many-to-many membership; we accept tag-based collections here since
+    // every Gifteeng product carries collection slugs in metadata.tags
+    // for SEO-friendly URLs).
     type Row = { id: string; rank: number; total_count: bigint };
     const rows = await this.prisma.$queryRaw<Row[]>`
       WITH scored AS (
@@ -315,15 +447,19 @@ export class ProductsService {
           p.id,
           (
             3.0 * similarity(lower(coalesce(p.title, '')),       lower(${search})) +
+            2.0 * similarity(lower(coalesce(p.category, '')),    lower(${search})) +
+            1.5 * similarity(lower(coalesce(p.metadata->>'tags', '')), lower(${search})) +
             1.0 * similarity(lower(coalesce(p.description, '')), lower(${search})) +
             2.0 * similarity(lower(coalesce(p.sku, '')),         lower(${search}))
           ) AS rank
         FROM "products" p
         WHERE p."b2cEnabled" = true
           AND (
-            lower(p.title)       % lower(${search}) OR
-            lower(p.description) % lower(${search}) OR
-            lower(p.sku)         % lower(${search})
+            lower(p.title)                 % lower(${search}) OR
+            lower(p.category)              % lower(${search}) OR
+            lower(p.metadata->>'tags')     % lower(${search}) OR
+            lower(p.description)           % lower(${search}) OR
+            lower(p.sku)                   % lower(${search})
           )
           ${collectionFilter}
           ${categoryFilter}
@@ -357,7 +493,14 @@ export class ProductsService {
       },
     });
     const byId = new Map(products.map((p) => [p.id, p]));
-    const items = ids.map((id) => byId.get(id)).filter(Boolean) as typeof products;
+    const ordered = ids.map((id) => byId.get(id)).filter(Boolean) as typeof products;
+    // Same response-boundary cleanup as the browse path: trim long descriptions
+    // and strip base64-data-URL image entries that bloat list responses.
+    const items = ordered.map((it) => ({
+      ...it,
+      description: trimDescriptionForCard(it.description),
+      images: sanitizeImagesForList(it.images),
+    }));
 
     return { items, total, page: q.page, pageSize: q.pageSize };
   }
@@ -381,10 +524,27 @@ export class ProductsService {
 
     const where: Prisma.ProductWhereInput = {
       ...statusFilter,
-      ...(q.category ? { category: q.category } : {}),
+      // Case-insensitive category filter so admins searching "Personalised
+      // gift" still find rows stored as "Personalised Gift".
+      ...(q.category
+        ? { category: { equals: q.category, mode: "insensitive" } }
+        : {}),
       ...(q.search
         ? { title: { contains: q.search, mode: "insensitive" } }
         : {}),
+      // Hide the Shopify-migration placeholder from the admin list. The
+      // row exists purely so historical Shopify orders have a Product to
+      // foreign-key against; deleting it from the UI tombstones it (FK
+      // conflict prevents hard delete) but the row stays in the table and
+      // we don't want it cluttering the admin grid.
+      //
+      // We match by slug ONLY (not also by metadata.shopify_placeholder)
+      // because Prisma's JSON-path filter does NOT coalesce NULL → "no
+      // shopify_placeholder key" became NULL, `NULL OR <slug-mismatch>`
+      // became NULL, and `NOT NULL` is NULL (not TRUE) — Postgres
+      // then dropped EVERY product from the admin list. The slug is
+      // unique and stable, so this single-field check is sufficient.
+      slug: { not: "shopify-migrated-line-item" },
     };
 
     const [items, total] = await Promise.all([
@@ -399,24 +559,8 @@ export class ProductsService {
     return { items, total, page: q.page, pageSize: q.pageSize };
   }
 
-  async listB2b(companyId: string, q: ProductListQuery) {
-    // Company sees: their owned private products + global b2bEnabled products they were granted
-    const companyProducts = await this.prisma.companyProduct.findMany({
-      where: { companyId, isVisible: true },
-      select: { productId: true },
-    });
-    const allowedIds = companyProducts.map((cp) => cp.productId);
-    const where = {
-      OR: [{ id: { in: allowedIds } }, { ownerCompanyId: companyId }],
-      b2bEnabled: true,
-    };
-    return this.prisma.product.findMany({
-      where,
-      skip: (q.page - 1) * q.pageSize,
-      take: q.pageSize,
-      orderBy: { createdAt: "desc" },
-    });
-  }
+  // listB2b() removed — the corporate per-company product catalog was
+  // dropped with the corporate offering.
 
   async getBySlug(slug: string) {
     // Cached at the slug level — product detail is the hottest read in
@@ -430,7 +574,15 @@ export class ProductsService {
         const where = UUID_RE.test(slug) ? { id: slug } : { slug };
         const product = await this.prisma.product.findUnique({
           where,
-          include: { variantOptions: true, collectionLinks: { include: { collection: true } } },
+          include: {
+            variantOptions: true,
+            collectionLinks: { include: { collection: true } },
+            frequentlyBoughtWith: {
+              where: { b2cEnabled: true },
+              select: { id: true, slug: true, title: true, basePrice: true, mrp: true, discountPct: true, images: true },
+              take: 4,
+            },
+          },
         });
         if (!product || !product.b2cEnabled) throw new NotFoundException();
         return product;
@@ -528,18 +680,39 @@ export class ProductsService {
 
   async createAdmin(input: AdminProductCreateInput) {
     const slug = input.slug?.trim() || (await this.generateSlug(input.title));
+    // Pre-write image normalisation:
+    //   1. Coerce string entries into `{ url, alt }`
+    //   2. Fill missing alts with "<brand> – <product title>" so screen
+    //      readers + Google never see blank-alt product images.
+    const brandFromMeta =
+      (typeof (input.metadata as any)?.brand === "string"
+        ? ((input.metadata as any).brand as string)
+        : null) ?? null;
+    const imagesWithAlts = autoFillAltText(
+      input.images,
+      input.title ?? "",
+      brandFromMeta,
+    );
+
+    const discountPct = computeDiscountPct(input.basePrice, input.mrp ?? null);
     const row = await this.prisma.product.create({
       data: {
         slug,
         title: input.title,
-        description: input.description,
+        // Sanitize on the write path so a content_editor with products.edit
+        // can't store executable script. The product page renders this
+        // through dangerouslySetInnerHTML; H-1 mitigation.
+        description: input.description !== undefined ? sanitizeHtml(input.description) : input.description,
         category: input.category,
+        brandName: input.brandName?.trim() || null,
         basePrice: new Prisma.Decimal(input.basePrice as any),
+        mrp: input.mrp != null ? new Prisma.Decimal(input.mrp as any) : null,
+        discountPct,
         currency: input.currency ?? "INR",
         sku: input.sku,
         inventory: input.inventory ?? 0,
         isCustomizable: input.isCustomizable ?? false,
-        images: (input.images as Prisma.InputJsonValue) ?? undefined,
+        images: (imagesWithAlts as Prisma.InputJsonValue) ?? undefined,
         mockupTemplates: (input.mockupTemplates as Prisma.InputJsonValue) ?? undefined,
         b2cEnabled: input.b2cEnabled ?? true,
         b2bEnabled: input.b2bEnabled ?? false,
@@ -550,6 +723,22 @@ export class ProductsService {
     // Broadcast to every connected client — a new product is now visible
     // on web + Flutter without a page reload.
     this.realtime.publishGlobal("products");
+
+    // Fire-and-forget SEO enrichment — runs rule-based instantly + AI
+    // asynchronously if configured. Never blocks the HTTP response.
+    this.seo.enrichProductAsync({
+      id: row.id,
+      slug: row.slug,
+      title: row.title,
+      description: row.description,
+      category: row.category,
+      basePrice: row.basePrice ? Number(row.basePrice) : null,
+      currency: row.currency,
+      images: row.images,
+      isCustomizable: row.isCustomizable,
+      metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+    });
+
     return row;
   }
 
@@ -561,20 +750,48 @@ export class ProductsService {
     // refreshes its zone configuration.
     const customizerTouched =
       input.mockupTemplates !== undefined || input.metadata !== undefined;
+
+    // Auto-fill image alt text if the caller is updating images. Use
+    // whichever title is being saved (or fall back to the existing row's
+    // title) so a re-upload with a fresh title doesn't keep the stale alt.
+    const brandFromMeta =
+      (typeof (input.metadata as any)?.brand === "string"
+        ? ((input.metadata as any).brand as string)
+        : null) ??
+      (typeof (existing.metadata as any)?.brand === "string"
+        ? ((existing.metadata as any).brand as string)
+        : null);
+    const imagesToWrite =
+      input.images !== undefined
+        ? autoFillAltText(input.images, input.title ?? existing.title, brandFromMeta)
+        : undefined;
+
+    // Recompute discountPct if mrp or basePrice is being updated
+    let discountPctUpdate: number | null | undefined = undefined;
+    if (input.mrp !== undefined || input.basePrice !== undefined) {
+      const effectiveMrp = input.mrp !== undefined ? input.mrp : (existing.mrp != null ? Number(existing.mrp) : null);
+      const effectiveBasePrice = input.basePrice !== undefined ? input.basePrice : Number(existing.basePrice);
+      discountPctUpdate = computeDiscountPct(effectiveBasePrice, effectiveMrp);
+    }
+
     const row = await this.prisma.product.update({
       where: { id },
       data: {
         slug: input.slug,
         title: input.title,
-        description: input.description,
+        description: input.description !== undefined ? sanitizeHtml(input.description) : undefined,
         category: input.category,
+        brandName:
+          input.brandName !== undefined ? (input.brandName.trim() || null) : undefined,
         basePrice:
           input.basePrice !== undefined ? new Prisma.Decimal(input.basePrice as any) : undefined,
+        mrp: input.mrp !== undefined ? (input.mrp != null ? new Prisma.Decimal(input.mrp as any) : null) : undefined,
+        discountPct: discountPctUpdate !== undefined ? discountPctUpdate : undefined,
         currency: input.currency,
         sku: input.sku,
         inventory: input.inventory,
         isCustomizable: input.isCustomizable,
-        images: input.images !== undefined ? (input.images as Prisma.InputJsonValue) : undefined,
+        images: imagesToWrite !== undefined ? (imagesToWrite as Prisma.InputJsonValue) : undefined,
         mockupTemplates:
           input.mockupTemplates !== undefined
             ? (input.mockupTemplates as Prisma.InputJsonValue)
@@ -588,6 +805,32 @@ export class ProductsService {
     });
     this.realtime.publishGlobal("products");
     if (customizerTouched) this.realtime.publishGlobal("customizer", { productSlug: row.slug });
+
+    // Re-enrich SEO if any content that affects search ranking changed.
+    // Skips enrichment for inventory-only / price-only updates to reduce
+    // unnecessary AI calls.
+    const seoRelevantChanged =
+      input.title !== undefined ||
+      input.description !== undefined ||
+      input.category !== undefined ||
+      input.images !== undefined ||
+      input.isCustomizable !== undefined;
+
+    if (seoRelevantChanged) {
+      this.seo.enrichProductAsync({
+        id: row.id,
+        slug: row.slug,
+        title: row.title,
+        description: row.description,
+        category: row.category,
+        basePrice: row.basePrice ? Number(row.basePrice) : null,
+        currency: row.currency,
+        images: row.images,
+        isCustomizable: row.isCustomizable,
+        metadata: (row.metadata as Record<string, unknown> | null) ?? null,
+      });
+    }
+
     return row;
   }
 
@@ -752,6 +995,19 @@ export class ProductsService {
       items.push(...pad);
     }
     return items;
+  }
+
+  async setFbtProducts(productId: string, fbtIds: string[]) {
+    await this.prisma.product.update({
+      where: { id: productId },
+      data: {
+        frequentlyBoughtWith: {
+          set: fbtIds.map((id) => ({ id })),
+        },
+      },
+    });
+    await this.invalidateCatalogCache();
+    return { ok: true };
   }
 
   /**

@@ -1,6 +1,6 @@
 import {
   Body, Controller, Delete, Get, NotFoundException,
-  Param, Post, Req, UseGuards,
+  Param, Patch, Post, Req, UseGuards,
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import { z } from "zod";
@@ -29,6 +29,22 @@ const createAddressSchema = z
     message: "name is required",
     path:    ["name"],
   });
+
+// Partial update payload — every field optional. Used by PATCH /addresses/:id.
+// Declared BEFORE the controller class so it's hoisted/accessible by the
+// @Body() decorator on the update() handler (TS would otherwise error TS2448).
+const updateAddressSchema = z.object({
+  name:      z.string().min(1).optional(),
+  fullName:  z.string().min(1).optional(),
+  phone:     z.string().min(6).optional(),
+  line1:     z.string().min(1).optional(),
+  line2:     z.string().optional(),
+  city:      z.string().min(1).optional(),
+  state:     z.string().optional(),
+  pincode:   z.string().min(4).optional(),
+  country:   z.string().optional(),
+  isDefault: z.boolean().optional(),
+});
 
 @ApiTags("addresses")
 @ApiBearerAuth()
@@ -96,5 +112,74 @@ export class AddressesController {
     if (!row || row.customerId !== req.user.customerId) throw new NotFoundException();
     await this.prisma.savedAddress.delete({ where: { id } });
     return { deleted: true };
+  }
+
+  // ── Update an address (incl. setting it as default) ─────────────────────
+  //
+  // Mobile clients send PATCH /addresses/:id with `{isDefault: true}` to
+  // promote an address. They also try POST /addresses/:id/default as a
+  // fallback (covered below).
+  //
+  // When `isDefault: true` is set, we run a transaction that flips every
+  // OTHER address for this customer to `isDefault: false` first — so the
+  // "exactly one default per customer" invariant holds.
+  @Patch(":id")
+  async update(
+    @Req()             req: any,
+    @Param("id")       id: string,
+    @Body(new ZodValidationPipe(updateAddressSchema))
+                       body: z.infer<typeof updateAddressSchema>,
+  ) {
+    const row = await this.prisma.savedAddress.findUnique({ where: { id } });
+    if (!row || row.customerId !== req.user.customerId) throw new NotFoundException();
+
+    const fullName =
+      body.name?.trim() || body.fullName?.trim() || row.fullName;
+
+    // Build the partial update payload, dropping `undefined` keys so we
+    // don't accidentally null out an unrelated field.
+    const data: Record<string, unknown> = { fullName };
+    if (body.phone     !== undefined) data.phone     = body.phone;
+    if (body.line1     !== undefined) data.line1     = body.line1;
+    if (body.line2     !== undefined) data.line2     = body.line2;
+    if (body.city      !== undefined) data.city      = body.city;
+    if (body.state     !== undefined) data.state     = body.state;
+    if (body.pincode   !== undefined) data.pincode   = body.pincode;
+    if (body.isDefault !== undefined) data.isDefault = body.isDefault;
+
+    // Promotion case → atomic: clear other defaults, then set this one.
+    const updated = body.isDefault === true
+      ? await this.prisma.$transaction(async (tx) => {
+          await tx.savedAddress.updateMany({
+            where: { customerId: req.user.customerId, isDefault: true },
+            data:  { isDefault: false },
+          });
+          return tx.savedAddress.update({ where: { id }, data });
+        })
+      : await this.prisma.savedAddress.update({ where: { id }, data });
+
+    return this.serialise(updated);
+  }
+
+  // Dedicated "promote to default" endpoint — kept for legacy clients that
+  // send POST /addresses/:id/default (older mobile builds). New code should
+  // use PATCH with `{isDefault: true}` above.
+  @Post(":id/default")
+  async makeDefault(@Req() req: any, @Param("id") id: string) {
+    const row = await this.prisma.savedAddress.findUnique({ where: { id } });
+    if (!row || row.customerId !== req.user.customerId) throw new NotFoundException();
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.savedAddress.updateMany({
+        where: { customerId: req.user.customerId, isDefault: true },
+        data:  { isDefault: false },
+      });
+      return tx.savedAddress.update({
+        where: { id },
+        data:  { isDefault: true },
+      });
+    });
+
+    return this.serialise(updated);
   }
 }

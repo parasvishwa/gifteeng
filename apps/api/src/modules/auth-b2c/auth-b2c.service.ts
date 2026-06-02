@@ -155,6 +155,141 @@ export class AuthB2cService {
     };
   }
 
+  // ── Sign in with Apple (ID-token verification) ───────────────────────────
+  //
+  // Apple is mandatory on iOS if any other social login is offered. The native
+  // Capacitor flow returns an `identityToken` (a JWT signed by Apple's
+  // ES256 keys) plus, on first signup only, the user's `email` and `name`.
+  // After first signup Apple withholds those fields — so we must persist them
+  // ourselves keyed by `sub`.
+  //
+  // Verification steps:
+  //   1. Fetch Apple's public keys from https://appleid.apple.com/auth/keys
+  //   2. Pick the JWK whose `kid` matches the token header's `kid`
+  //   3. Verify the token signature, audience, issuer, expiry
+  //   4. Find or create a Customer by appleId, or link via email
+  //
+  // Required env:
+  //   APPLE_BUNDLE_ID — must match the audience claim, e.g. "com.imazyn.gifteeng"
+  //   APPLE_SERVICES_ID (optional) — for web-based Sign in with Apple flows
+  async verifyAppleCredential(input: {
+    identityToken: string;
+    email?: string | null;     // first signup only
+    fullName?: string | null;  // first signup only
+    sessionKey?: string;
+  }) {
+    const { identityToken, email, fullName, sessionKey } = input;
+    const expectedAud = (process.env.APPLE_BUNDLE_ID ?? "").trim();
+    if (!expectedAud) {
+      throw new UnauthorizedException("Apple sign-in is not configured on this server.");
+    }
+
+    // Decode header to find the key id; verify with Apple's published JWKS.
+    const [headerB64] = identityToken.split(".");
+    if (!headerB64) throw new UnauthorizedException("Malformed Apple token");
+    let header: { kid?: string; alg?: string };
+    try {
+      header = JSON.parse(Buffer.from(headerB64, "base64url").toString("utf8"));
+    } catch {
+      throw new UnauthorizedException("Malformed Apple token header");
+    }
+    if (!header.kid || !header.alg) throw new UnauthorizedException("Apple token missing kid/alg");
+
+    // Apple rotates its keys; fetch fresh on each verify (cheap, <1KB).
+    const jwksRes = await fetch("https://appleid.apple.com/auth/keys");
+    if (!jwksRes.ok) throw new UnauthorizedException("Could not reach Apple JWKS");
+    const jwks = (await jwksRes.json()) as { keys: Array<{ kid: string; n: string; e: string; alg: string; kty: string }> };
+    const jwk = jwks.keys.find((k) => k.kid === header.kid);
+    if (!jwk) throw new UnauthorizedException("Apple JWKS: no matching key");
+
+    // Build a public key object for the verifier and serialize to PEM —
+    // jsonwebtoken (used under NestJS JwtService) accepts string|Buffer.
+    const pubKeyPem = crypto.createPublicKey({ key: jwk as any, format: "jwk" })
+      .export({ type: "spki", format: "pem" }) as string;
+
+    // Verify signature + claims via NestJS JwtService.
+    let payload: { sub: string; email?: string; email_verified?: boolean | string; aud?: string; iss?: string; exp?: number };
+    try {
+      payload = await this.jwt.verifyAsync(identityToken, {
+        publicKey: pubKeyPem,
+        algorithms: [header.alg as any],
+        audience: expectedAud,
+        issuer: "https://appleid.apple.com",
+      });
+    } catch (e) {
+      throw new UnauthorizedException(`Apple token verification failed: ${(e as Error).message}`);
+    }
+
+    if (!payload.sub) throw new UnauthorizedException("Apple token missing sub");
+    if (payload.exp && payload.exp * 1000 < Date.now()) {
+      throw new UnauthorizedException("Apple token expired");
+    }
+
+    // Email may live in the token (verified) or, on first signup, in the
+    // body the client provided alongside the token. Prefer the token's value
+    // when present — it's the only one signed by Apple.
+    const tokenEmail = payload.email && (payload.email_verified === true || payload.email_verified === "true")
+      ? payload.email
+      : null;
+    const finalEmail = tokenEmail ?? email ?? null;
+
+    // 1. Look up by appleId (stable across logins).
+    let customer = await this.prisma.customer.findUnique({ where: { appleId: payload.sub } });
+
+    // 2. Link by email if no appleId match yet (e.g. user previously signed
+    //    up via phone OTP or Google with the same email).
+    if (!customer && finalEmail) {
+      customer = await this.prisma.customer.findUnique({ where: { email: finalEmail } });
+      if (customer) {
+        customer = await this.prisma.customer.update({
+          where: { id: customer.id },
+          data: {
+            appleId: payload.sub,
+            emailVerified: true,
+            fullName: customer.fullName ?? fullName ?? null,
+            lastLoginAt: new Date(),
+          },
+        });
+      }
+    }
+
+    let isNewSignup = false;
+    if (!customer) {
+      customer = await this.prisma.customer.create({
+        data: {
+          email: finalEmail,
+          fullName: fullName ?? null,
+          appleId: payload.sub,
+          emailVerified: !!tokenEmail,
+          lastLoginAt: new Date(),
+        },
+      });
+      isNewSignup = true;
+    } else {
+      await this.prisma.customer.update({
+        where: { id: customer.id },
+        data: { lastLoginAt: new Date() },
+      });
+    }
+
+    const accessToken = await this.jwt.signAsync(
+      { sub: customer.id, aud: "b2c" },
+      { secret: process.env.JWT_B2C_SECRET!, expiresIn: process.env.JWT_EXPIRES_IN ?? "7d" },
+    );
+
+    if (sessionKey) {
+      await this.cartService.mergeGuestIntoCustomer(sessionKey, customer.id);
+    }
+
+    return {
+      accessToken,
+      audience: "b2c" as const,
+      expiresIn: 60 * 60 * 24 * 7,
+      customerId: customer.id,
+      isNewSignup,
+    };
+  }
+
   async verifyOtp(rawPhone: string, code: string, sessionKey?: string) {
     const phone = this.normalizePhone(rawPhone);
 
